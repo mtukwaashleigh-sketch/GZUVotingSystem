@@ -511,10 +511,17 @@ def send_transaction(function):
 
 
     if receipt.status != 1:
+        print("BLOCKCHAIN TRANSACTION FAILED")
+        print("Transaction hash:", transaction_hash.hex())
+        print("Transaction receipt:", dict(receipt))
+        print("Chain ID:", web3.eth.chain_id)
+        print("Contract address:", voting_contract.address)
 
-        raise Exception(
-            "Blockchain transaction failed."
-        )
+    raise Exception(
+        f"Blockchain transaction reverted. "
+        f"Hash: {transaction_hash.hex()}"
+    )
+
 
 
     print(
