@@ -5,7 +5,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 
 object RetrofitClient {
 
-    private const val BASE_URL = "http://10.200.97.97:8000/"
+    private const val BASE_URL = "https://gzuvotingsystem.onrender.com/"
 
     /**
      * Converts backend-relative photo paths (for example /uploads/photo.jpg)

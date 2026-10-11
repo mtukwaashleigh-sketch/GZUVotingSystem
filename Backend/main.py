@@ -966,43 +966,28 @@ def get_election_results(
 # UPDATE ELECTION STATUS
 # ============================================================
 
-@app.put(
-    "/elections/{election_id}/status"
-)
+@app.put("/elections/{election_id}/status")
 def update_election_status(
     election_id: int,
     status: str,
     admin_claims: dict = Depends(require_admin_api),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    allowed_statuses = {"upcoming", "ongoing", "closed", "cancelled"}
+    if status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Invalid election status.")
 
-    election = (
-        db.query(Election)
-        .filter(
-            Election.id == election_id
-        )
-        .first()
-    )
-
+    election = db.query(Election).filter(Election.id == election_id).first()
     if not election:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Election not found"
-        )
+        raise HTTPException(status_code=404, detail="Election not found.")
+    if election.is_deleted:
+        raise HTTPException(status_code=409, detail="Archived elections cannot be changed.")
     if election.blockchain_election_id is None:
         raise HTTPException(
             status_code=400,
-            detail="This election is not linked to the blockchain"
+            detail="This election is not linked to the blockchain.",
         )
 
-    blockchain_id = election.blockchain_election_id
-
-    allowed_statuses = {"upcoming", "ongoing", "closed", "cancelled"}
-    if status not in allowed_statuses:
-        raise HTTPException(status_code=400, detail="Invalid election status")
-    if election.is_deleted:
-        raise HTTPException(status_code=409, detail="Archived elections cannot be changed.")
     allowed_transitions = {
         "upcoming": {"upcoming", "ongoing", "closed", "cancelled"},
         "ongoing": {"ongoing", "closed", "cancelled"},
@@ -1010,29 +995,57 @@ def update_election_status(
         "cancelled": {"cancelled"},
     }
     if status not in allowed_transitions.get(election.status, set()):
-        raise HTTPException(status_code=409, detail="This election status transition is not allowed.")
+        raise HTTPException(
+            status_code=409,
+            detail="This election status transition is not allowed.",
+        )
 
-    # Submit the required blockchain transaction before committing SQLite.
+    # No blockchain transaction is needed when the database already has this status.
+    if election.status == status:
+        return {
+            "message": "Election status is already set.",
+            "election_id": election.id,
+            "status": election.status,
+        }
+
     from blockchain import (
         end_election_on_blockchain,
         cancel_election_on_blockchain,
         start_election_on_blockchain,
         get_blockchain_election_status,
     )
+
+    blockchain_id = election.blockchain_election_id
     try:
         chain_status = get_blockchain_election_status(blockchain_id)
-        if status == "closed":
-            if not chain_status["closed"] and not chain_status["cancelled"]:
+
+        if status == "ongoing":
+            if chain_status.get("closed") or chain_status.get("cancelled"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A closed or cancelled blockchain election cannot be started.",
+                )
+            if not chain_status.get("active"):
+                start_election_on_blockchain(blockchain_id)
+
+        elif status == "closed":
+            if chain_status.get("cancelled"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A cancelled election cannot be closed.",
+                )
+            if not chain_status.get("closed"):
                 end_election_on_blockchain(blockchain_id)
-            elif chain_status["cancelled"]:
-                raise HTTPException(status_code=409, detail="A cancelled election cannot be closed.")
+
         elif status == "cancelled":
-            if not chain_status["cancelled"] and not chain_status["closed"]:
+            if chain_status.get("closed"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A closed election cannot be cancelled.",
+                )
+            if not chain_status.get("cancelled"):
                 cancel_election_on_blockchain(blockchain_id)
-            elif chain_status["closed"]:
-                raise HTTPException(status_code=409, detail="A closed election cannot be cancelled.")
-        elif status == "ongoing" and not chain_status["active"]:
-            start_election_on_blockchain(blockchain_id)
+
     except HTTPException:
         db.rollback()
         raise
@@ -1040,22 +1053,25 @@ def update_election_status(
         db.rollback()
         raise HTTPException(
             status_code=502,
-            detail="Blockchain transaction failed; SQLite status was not changed. "
-                   "Check the transaction and chain state before retrying.",
+            detail=(
+                "Blockchain transaction failed; election status was not changed. "
+                "Check the transaction and blockchain state before retrying."
+            ),
         ) from exc
 
-    election.status = status
-    db.commit()
-
-    db.refresh(
-        election
-    )
+    try:
+        election.status = status
+        db.commit()
+        db.refresh(election)
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Election status could not be saved to the database.",
+        )
 
     return {
-        "message": (
-            "Election status updated "
-            "successfully"
-        ),
+        "message": "Election status updated successfully.",
         "election_id": election.id,
-        "status": election.status
+        "status": election.status,
     }

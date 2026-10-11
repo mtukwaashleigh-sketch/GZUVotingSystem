@@ -151,23 +151,12 @@ async function main() {
             "contract-address.json"
         );
 
-
-    const addressData = {
-
-        address: contractAddress,
-
-        network: "localhost",
-
-        chainId:
-            (
-                await hre.ethers.provider
-                    .getNetwork()
-            )
-            .chainId
-            .toString()
-
-    };
-
+const networkInfo = await hre.ethers.provider.getNetwork();
+const addressData = {
+    address: contractAddress,
+    network: hre.network.name,
+    chainId: networkInfo.chainId.toString()
+};
 
     fs.writeFileSync(
 
