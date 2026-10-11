@@ -13,7 +13,7 @@ from web3 import Web3
 BASE_DIR = Path(__file__).resolve().parent
 
 BLOCKCHAIN_PROJECT_DIR = (
-    BASE_DIR.parent / "gzuvotingblockchain"
+    BASE_DIR.parent / "GZUVotingGitHub" / "Blockchain"
 )
 
 CONTRACT_ADDRESS_FILE = (
@@ -25,7 +25,7 @@ CONTRACT_ADDRESS_FILE = (
 # LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BLOCKCHAIN_PROJECT_DIR / ".env", override=True)
 
 BLOCKCHAIN_PRIVATE_KEY = os.getenv(
     "BLOCKCHAIN_PRIVATE_KEY"
@@ -43,7 +43,12 @@ if not BLOCKCHAIN_PRIVATE_KEY:
 # BLOCKCHAIN CONNECTION
 # ============================================================
 
-BLOCKCHAIN_RPC_URL = "http://127.0.0.1:8545"
+BLOCKCHAIN_RPC_URL = os.getenv("SEPOLIA_RPC_URL", "").strip()
+
+if not BLOCKCHAIN_RPC_URL:
+    raise Exception(
+        "SEPOLIA_RPC_URL is missing from Blockchain/.env"
+    )
 
 web3 = Web3(
     Web3.HTTPProvider(BLOCKCHAIN_RPC_URL)
@@ -51,11 +56,9 @@ web3 = Web3(
 
 
 if not web3.is_connected():
-
     raise Exception(
-        "Unable to connect to Hardhat blockchain at "
-        f"{BLOCKCHAIN_RPC_URL}. "
-        "Make sure 'npx hardhat node' is running."
+        "Unable to connect to the configured Sepolia RPC endpoint. "
+        "Check your RPC configuration and internet connection."
     )
 
 
@@ -63,10 +66,7 @@ print("")
 print("==============================================")
 print("GZU BLOCKCHAIN CONNECTION")
 print("==============================================")
-print(
-    "Connected to:",
-    BLOCKCHAIN_RPC_URL
-)
+print("Connected to: Sepolia RPC endpoint (URL hidden)")
 print(
     "Chain ID:",
     web3.eth.chain_id
