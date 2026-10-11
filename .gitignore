@@ -1,0 +1,48 @@
+# Secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+secrets/
+credentials/
+
+# Python backend
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
+uploads/
+
+# Android / Gradle
+**/local.properties
+.gradle/
+**/.gradle/
+**/build/
+.kotlin/
+**/.kotlin/
+*.iml
+
+# Node.js / Hardhat
+node_modules/
+**/node_modules/
+Blockchain/artifacts/
+Blockchain/cache/
+coverage/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp

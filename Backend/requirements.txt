@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+bcrypt
+web3
+itsdangerous
+python-multipart
+PyJWT
+python-dotenv
