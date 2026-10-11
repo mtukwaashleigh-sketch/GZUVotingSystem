@@ -7,3 +7,4 @@ itsdangerous
 python-multipart
 PyJWT
 python-dotenv
+psycopg[binary]
