@@ -12,9 +12,7 @@ from web3 import Web3
 
 BASE_DIR = Path(__file__).resolve().parent
 
-BLOCKCHAIN_PROJECT_DIR = (
-    BASE_DIR.parent / "GZUVotingGitHub" / "Blockchain"
-)
+BLOCKCHAIN_PROJECT_DIR = BASE_DIR.parent / "Blockchain"
 
 CONTRACT_ADDRESS_FILE = (
     BLOCKCHAIN_PROJECT_DIR / "contract-address.json"
