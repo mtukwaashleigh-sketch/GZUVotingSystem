@@ -2102,7 +2102,7 @@ def admin_dashboard(
 
                 <p>
                     <strong>Voting technology:</strong>
-                    Blockchain-based voting
+                    Blockchain-based voting through Sepolia blockchain. 
                 </p>
 
                 <p>
@@ -2112,7 +2112,7 @@ def admin_dashboard(
 
                 <p>
                     <strong>Database:</strong>
-                    SQLite
+                    PostgreSQL through SQLAlchemy 
                 </p>
 
             </div>
