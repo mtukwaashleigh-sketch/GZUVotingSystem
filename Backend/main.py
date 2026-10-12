@@ -49,7 +49,11 @@ from blockchain import (
     submit_vote,
     web3,
     sync_database_to_blockchain,
-    add_candidate_to_blockchain
+    add_candidate_to_blockchain,
+    get_blockchain_election_count,
+    get_blockchain_election_status,
+    get_blockchain_candidate_count,
+    get_blockchain_candidate,
 )
 
 
@@ -129,6 +133,146 @@ def get_db():
 
     finally:
         db.close()
+
+
+# ============================================================
+# SAFE BLOCKCHAIN MAPPING VALIDATION
+# ============================================================
+
+def _normalise_mapping_text(value):
+    """Normalise labels for comparison without treating different titles as equal."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _verify_blockchain_election_mapping(election):
+    """Return the mapped chain ID/status only when the election title agrees.
+
+    This deliberately does not guess or silently remap elections. A candidate
+    appearing on another election is not proof that the elections are the same.
+    """
+    chain_id = election.blockchain_election_id
+    if chain_id is None or int(chain_id) < 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Election '{election.title}' (SQLite ID {election.id}) has no valid "
+                "blockchain election mapping. No vote was submitted. Run the mapping "
+                "diagnostic and verify the correct election before repairing it."
+            ),
+        )
+
+    try:
+        chain_count = int(get_blockchain_election_count())
+        if int(chain_id) > chain_count:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Election mapping conflict: SQLite election {election.id} points "
+                    f"to blockchain election {chain_id}, but the connected blockchain "
+                    f"contains only {chain_count} elections. No transaction was sent."
+                ),
+            )
+        chain_status = get_blockchain_election_status(int(chain_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not verify the blockchain election mapping: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    if _normalise_mapping_text(chain_status.get("title")) != _normalise_mapping_text(election.title):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Election mapping conflict: SQLite election {election.id} is titled "
+                f"'{election.title}', but its stored blockchain mapping points to "
+                f"blockchain election {chain_id}, titled '{chain_status.get('title')}'. "
+                "No blockchain transaction was sent. Do not change this mapping just "
+                "because a candidate name matches; verify the election identity first."
+            ),
+        )
+
+    return int(chain_id), chain_status
+
+
+def _ensure_candidate_blockchain_mapping(db, election, candidate, verified_chain_id=None):
+    """Validate or safely repair a candidate ID inside the verified election only."""
+    if verified_chain_id is None:
+        verified_chain_id, _ = _verify_blockchain_election_mapping(election)
+
+    try:
+        count = int(get_blockchain_candidate_count(verified_chain_id))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not read blockchain candidates: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    expected_name = _normalise_mapping_text(candidate.name)
+    expected_position = _normalise_mapping_text(candidate.position)
+    stored_id = candidate.blockchain_candidate_id
+
+    if stored_id is not None and int(stored_id) > 0 and int(stored_id) <= count:
+        try:
+            chain_candidate = get_blockchain_candidate(verified_chain_id, int(stored_id))
+            if (
+                _normalise_mapping_text(chain_candidate.get("name")) == expected_name
+                and _normalise_mapping_text(chain_candidate.get("position")) == expected_position
+            ):
+                return int(stored_id)
+        except Exception:
+            # The exact-name search below can repair a stale candidate ID safely.
+            pass
+
+    matches = []
+    for on_chain_id in range(1, count + 1):
+        try:
+            chain_candidate = get_blockchain_candidate(verified_chain_id, on_chain_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Could not verify blockchain candidate {on_chain_id}: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+        if (
+            _normalise_mapping_text(chain_candidate.get("name")) == expected_name
+            and _normalise_mapping_text(chain_candidate.get("position")) == expected_position
+        ):
+            matches.append(on_chain_id)
+
+    if len(matches) == 1:
+        candidate.blockchain_candidate_id = matches[0]
+        try:
+            db.commit()
+            db.refresh(candidate)
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail="The verified candidate mapping could not be saved to SQLite.",
+            ) from exc
+        print(
+            f"Repaired candidate mapping: SQLite candidate {candidate.id} -> "
+            f"blockchain election {verified_chain_id}, candidate {matches[0]}"
+        )
+        return matches[0]
+
+    if len(matches) > 1:
+        detail = (
+            f"Candidate '{candidate.name}' ({candidate.position}) appears more than "
+            f"once on blockchain election {verified_chain_id}. The system will not "
+            "guess which on-chain candidate is correct."
+        )
+    else:
+        detail = (
+            f"Candidate '{candidate.name}' ({candidate.position}) is not present on "
+            f"the verified blockchain election {verified_chain_id}. The system will "
+            "not submit a vote using candidate ID 0 or a candidate from another election."
+        )
+    raise HTTPException(status_code=409, detail=detail)
 
 
 # ============================================================
@@ -271,12 +415,7 @@ def get_candidates(
 
     if not election or election.is_deleted:
         raise HTTPException(status_code=404, detail="Election not found")
-    if election.blockchain_election_id is None:
-        raise HTTPException(
-                status_code=400,
-                detail="This election is not linked to the blockchain"
-                )
-    blockchain_id = election.blockchain_election_id
+    blockchain_id, _chain_status = _verify_blockchain_election_mapping(election)
 
     if election.status == "cancelled":
         raise HTTPException(
@@ -295,11 +434,14 @@ def get_candidates(
 
     result = []
     for candidate in candidates:
+        verified_candidate_id = _ensure_candidate_blockchain_mapping(
+            db, election, candidate, verified_chain_id=blockchain_id
+        )
         profile = db.query(CandidateProfile).filter(CandidateProfile.candidate_id == candidate.id).first()
         result.append({
             "id": candidate.id, "election_id": candidate.election_id,
             "name": candidate.name, "position": candidate.position,
-            "blockchain_candidate_id": candidate.blockchain_candidate_id,
+            "blockchain_candidate_id": verified_candidate_id,
             "photo_url": f"/candidate-photos/{profile.photo_path}" if profile and profile.photo_path else None,
             "faculty": profile.faculty if profile else None,
             "department": profile.department if profile else None,
@@ -476,7 +618,8 @@ def admin_review_nomination(
             _receipt, chain_id = add_candidate_to_blockchain(
                 blockchain_id,
                 item.full_name,
-                item.position
+                item.position,
+                expected_title=election.title,
             )
         except Exception as exc:
             raise HTTPException(
@@ -591,13 +734,7 @@ def cast_vote(
             detail="Cancelled or closed elections cannot accept votes."
         )
 
-    if election.blockchain_election_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This election is not linked to the blockchain"
-        )
-
-    blockchain_id = election.blockchain_election_id
+    blockchain_id, _chain_status = _verify_blockchain_election_mapping(election)
     # --------------------------------------------------------
     # CHECK ELECTION STATUS
     # --------------------------------------------------------
@@ -655,19 +792,9 @@ def cast_vote(
     # CHECK BLOCKCHAIN CANDIDATE ID
     # --------------------------------------------------------
 
-    blockchain_candidate_id = (
-        candidate.blockchain_candidate_id
+    blockchain_candidate_id = _ensure_candidate_blockchain_mapping(
+        db, election, candidate, verified_chain_id=blockchain_id
     )
-
-    if blockchain_candidate_id is None:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Candidate is not correctly "
-                "linked to the blockchain"
-            )
-        )
 
     # --------------------------------------------------------
     # CHECK DUPLICATE VOTE
@@ -843,13 +970,7 @@ def get_election_results(
 
     if not election or election.is_deleted:
         raise HTTPException(status_code=404, detail="Election not found")
-    if election.blockchain_election_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This election is not linked to the blockchain"
-        )
-
-    blockchain_id = election.blockchain_election_id
+    blockchain_id, _chain_status = _verify_blockchain_election_mapping(election)
 
     # Students can view live results while voting is ongoing and final results
     # after closure. Upcoming, cancelled, and archived elections do not expose results.
@@ -872,20 +993,9 @@ def get_election_results(
 
     for candidate in candidates:
 
-        blockchain_candidate_id = (
-            candidate.blockchain_candidate_id
+        blockchain_candidate_id = _ensure_candidate_blockchain_mapping(
+            db, election, candidate, verified_chain_id=blockchain_id
         )
-
-        if blockchain_candidate_id is None:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"Candidate '{candidate.name}' "
-                    "is not correctly linked "
-                    "to the blockchain"
-                )
-            )
 
         try:
 
@@ -987,6 +1097,7 @@ def update_election_status(
             status_code=400,
             detail="This election is not linked to the blockchain.",
         )
+    _verified_chain_id, _verified_chain_status = _verify_blockchain_election_mapping(election)
 
     allowed_transitions = {
         "upcoming": {"upcoming", "ongoing", "closed", "cancelled"},

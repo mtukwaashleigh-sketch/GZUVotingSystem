@@ -295,6 +295,28 @@ def send_transaction(function):
     return receipt
 
 
+def _normalise_chain_text(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def verify_election_title(election_id, expected_title):
+    """Refuse to transact against a chain election with a different title."""
+    election_id = int(election_id)
+    count = int(get_blockchain_election_count())
+    if election_id < 1 or election_id > count:
+        raise ValueError(
+            f"Blockchain election ID {election_id} is invalid; the chain has {count} elections."
+        )
+    status = get_blockchain_election_status(election_id)
+    if _normalise_chain_text(status.get("title")) != _normalise_chain_text(expected_title):
+        raise ValueError(
+            f"Election mapping conflict: expected SQLite title {expected_title!r}, "
+            f"but blockchain election {election_id} is titled {status.get('title')!r}. "
+            "No transaction was sent."
+        )
+    return status
+
+
 # ============================================================
 # CREATE ELECTION
 # ============================================================
@@ -334,13 +356,17 @@ def start_election_on_blockchain(election_id):
 # ADD CANDIDATE
 # ============================================================
 
-def add_candidate_to_blockchain(election_id, name, position):
+def add_candidate_to_blockchain(election_id, name, position, expected_title=None):
     print("\nAdding candidate to blockchain")
     print("Election:", election_id)
     print("Name:", name)
     print("Position:", position)
 
-    status = get_blockchain_election_status(election_id)
+    status = (
+        verify_election_title(election_id, expected_title)
+        if expected_title is not None
+        else get_blockchain_election_status(election_id)
+    )
 
     if status["started"] or status["closed"] or status["cancelled"]:
         raise RuntimeError(
@@ -575,7 +601,7 @@ def sync_database_to_blockchain(db):
             try:
                 chain_status = get_blockchain_election_status(blockchain_id)
 
-                if chain_status["title"] != election.title:
+                if _normalise_chain_text(chain_status["title"]) != _normalise_chain_text(election.title):
                     print(
                         f"WARNING: Title mismatch for SQLite election "
                         f"{election.id} and blockchain election "
@@ -596,7 +622,7 @@ def sync_database_to_blockchain(db):
                 try:
                     chain_status = get_blockchain_election_status(on_chain_id)
 
-                    if chain_status["title"] == election.title:
+                    if _normalise_chain_text(chain_status["title"]) == _normalise_chain_text(election.title):
                         matched_id = on_chain_id
                         break
                 except Exception:
@@ -687,8 +713,8 @@ def sync_database_to_blockchain(db):
                     )
 
                     if (
-                        chain_candidate["name"] == candidate.name
-                        and chain_candidate["position"] == candidate.position
+                        _normalise_chain_text(chain_candidate["name"]) == _normalise_chain_text(candidate.name)
+                        and _normalise_chain_text(chain_candidate["position"]) == _normalise_chain_text(candidate.position)
                     ):
                         matched_candidate_id = on_chain_id
                         break
