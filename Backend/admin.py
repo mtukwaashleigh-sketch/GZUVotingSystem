@@ -4693,7 +4693,12 @@ def admin_review_nomination_page(
 
     db = get_db()
     try:
-        item = db.query(CandidateNomination).filter(CandidateNomination.id == nomination_id).first()
+        item = (
+            db.query(CandidateNomination)
+            .filter(CandidateNomination.id == nomination_id)
+            .with_for_update()
+            .first()
+        )
         if not item:
             set_flash(request, "Nomination not found.")
             return RedirectResponse("/admin/nominations", status_code=303)
@@ -4714,61 +4719,127 @@ def admin_review_nomination_page(
                     request,
                     "This candidate cannot be approved because the election is not upcoming."
                 )
-                return RedirectResponse(
-                    "/admin/nominations",
-                    status_code=303
-                )
+                return RedirectResponse("/admin/nominations", status_code=303)
 
             if election.blockchain_election_id is None:
                 set_flash(
                     request,
                     "Candidate approval failed: this election has no blockchain mapping."
                 )
-                return RedirectResponse(
-                    "/admin/nominations",
-                    status_code=303
-                )
+                return RedirectResponse("/admin/nominations", status_code=303)
 
-            blockchain_id = election.blockchain_election_id
+            blockchain_id = int(election.blockchain_election_id)
+            normalized_name = " ".join(item.full_name.split()).casefold()
+            normalized_position = " ".join(item.position.split()).casefold()
+
+            # First look for a database candidate already created by an earlier
+            # attempt. This makes approval retries safe after a transaction has
+            # succeeded on-chain but the database commit failed.
+            existing_candidate = None
+            election_candidates = (
+                db.query(Candidate)
+                .filter(Candidate.election_id == item.election_id)
+                .all()
+            )
+            for stored_candidate in election_candidates:
+                if (
+                    " ".join((stored_candidate.name or "").split()).casefold()
+                    == normalized_name
+                    and " ".join((stored_candidate.position or "").split()).casefold()
+                    == normalized_position
+                ):
+                    existing_candidate = stored_candidate
+                    break
 
             try:
-                _receipt, chain_id = add_candidate_to_blockchain(
-                    blockchain_id,
-                    item.full_name,
-                    item.position
+                from blockchain import (
+                    get_blockchain_candidate_count,
+                    get_blockchain_candidate,
                 )
+
+                # Search the chain before submitting a transaction. If a prior
+                # request reached the blockchain but failed before saving its
+                # database state, reuse that on-chain candidate instead of
+                # registering the same person a second time.
+                matching_chain_ids = []
+                chain_count = get_blockchain_candidate_count(blockchain_id)
+                for candidate_id in range(1, int(chain_count) + 1):
+                    chain_candidate = get_blockchain_candidate(
+                        blockchain_id, candidate_id
+                    )
+                    chain_name = " ".join(
+                        str(chain_candidate.get("name", "")).split()
+                    ).casefold()
+                    chain_position = " ".join(
+                        str(chain_candidate.get("position", "")).split()
+                    ).casefold()
+                    if (
+                        chain_name == normalized_name
+                        and chain_position == normalized_position
+                    ):
+                        matching_chain_ids.append(candidate_id)
+
+                # Prefer the existing database mapping when it is one of the
+                # matching chain records; otherwise reuse the first match.
+                mapped_id = (
+                    int(existing_candidate.blockchain_candidate_id)
+                    if existing_candidate is not None
+                    and existing_candidate.blockchain_candidate_id is not None
+                    else None
+                )
+                if mapped_id in matching_chain_ids:
+                    chain_id = mapped_id
+                elif matching_chain_ids:
+                    chain_id = matching_chain_ids[0]
+                else:
+                    _receipt, chain_id = add_candidate_to_blockchain(
+                        blockchain_id,
+                        item.full_name,
+                        item.position,
+                    )
+                    chain_id = int(chain_id)
+
             except Exception as exc:
                 db.rollback()
                 set_flash(
                     request,
-                    f"Blockchain registration failed ({type(exc).__name__}). Check the blockchain node and try again."
+                    f"Blockchain registration failed ({type(exc).__name__}). "
+                    "Check the blockchain node and try again."
                 )
-                return RedirectResponse(
-                    "/admin/nominations",
-                    status_code=303
-                )
+                return RedirectResponse("/admin/nominations", status_code=303)
 
-            candidate = Candidate(
-                election_id=item.election_id,
-                name=item.full_name,
-                position=item.position,
-                blockchain_candidate_id=int(chain_id),
-            )
-            db.add(candidate)
-            db.flush()
-            db.add(CandidateProfile(
-                candidate_id=candidate.id,
-                photo_path=item.photo_path,
-                faculty=item.faculty,
-                department=item.department,
-                programme=item.programme,
-                year_of_study=item.year_of_study,
-                manifesto=item.manifesto,
-                experience=item.experience,
-            ))
+            if existing_candidate is None:
+                candidate = Candidate(
+                    election_id=item.election_id,
+                    name=item.full_name,
+                    position=item.position,
+                    blockchain_candidate_id=int(chain_id),
+                )
+                db.add(candidate)
+                db.flush()
+                db.add(CandidateProfile(
+                    candidate_id=candidate.id,
+                    photo_path=item.photo_path,
+                    faculty=item.faculty,
+                    department=item.department,
+                    programme=item.programme,
+                    year_of_study=item.year_of_study,
+                    manifesto=item.manifesto,
+                    experience=item.experience,
+                ))
+            else:
+                candidate = existing_candidate
+                # Fill a missing mapping, but do not overwrite a known mapping.
+                if candidate.blockchain_candidate_id is None:
+                    candidate.blockchain_candidate_id = int(chain_id)
+
             item.candidate_id = candidate.id
             item.status = "approved"
-            message = "Nomination approved and candidate registered."
+            message = (
+                "Nomination approved. Existing candidate registration was reused."
+                if existing_candidate is not None or matching_chain_ids
+                else "Nomination approved and candidate registered."
+            )
         elif decision == "reject":
             item.status = "rejected"
             message = "Nomination rejected."
