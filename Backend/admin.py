@@ -10,8 +10,7 @@ from models import (
     CandidateNomination,
     CandidateProfile,
     VotingRecord,
-    Vote,
-    Election
+    Vote
 )
 
 
@@ -2962,7 +2961,7 @@ def create_election(
         blockchain_election_id = int(blockchain_election_id)
 
         # Check whether this blockchain ID is already mapped
-        # to another SQLite election.
+        # to another PostgreSQL election.
         existing_election = (
             db.query(Election)
             .filter(
@@ -2975,7 +2974,7 @@ def create_election(
         if existing_election:
             raise Exception(
                 f"Blockchain election ID {blockchain_election_id} "
-                f"is already mapped to SQLite election "
+                f"is already mapped to PostgreSQL election "
                 f"{existing_election.id}. The blockchain transaction "
                 "has already succeeded. Do not retry creation; "
                 "manual reconciliation is required."
@@ -2997,7 +2996,7 @@ def create_election(
         set_flash(
             request,
             f"Election '{title}' was created successfully. "
-            f"SQLite ID: {election.id}; "
+            f"PostgreSQL ID: {election.id}; "
             f"Blockchain ID: {blockchain_election_id}."
         )
 

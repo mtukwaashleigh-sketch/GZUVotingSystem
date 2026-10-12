@@ -295,28 +295,6 @@ def send_transaction(function):
     return receipt
 
 
-def _normalise_chain_text(value):
-    return " ".join(str(value or "").split()).casefold()
-
-
-def verify_election_title(election_id, expected_title):
-    """Refuse to transact against a chain election with a different title."""
-    election_id = int(election_id)
-    count = int(get_blockchain_election_count())
-    if election_id < 1 or election_id > count:
-        raise ValueError(
-            f"Blockchain election ID {election_id} is invalid; the chain has {count} elections."
-        )
-    status = get_blockchain_election_status(election_id)
-    if _normalise_chain_text(status.get("title")) != _normalise_chain_text(expected_title):
-        raise ValueError(
-            f"Election mapping conflict: expected SQLite title {expected_title!r}, "
-            f"but blockchain election {election_id} is titled {status.get('title')!r}. "
-            "No transaction was sent."
-        )
-    return status
-
-
 # ============================================================
 # CREATE ELECTION
 # ============================================================
@@ -362,11 +340,13 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
     print("Name:", name)
     print("Position:", position)
 
-    status = (
-        verify_election_title(election_id, expected_title)
-        if expected_title is not None
-        else get_blockchain_election_status(election_id)
-    )
+    status = get_blockchain_election_status(election_id)
+
+    if expected_title is not None and _normalise_chain_text(status["title"]) != _normalise_chain_text(expected_title):
+        raise RuntimeError(
+            f"Election mapping mismatch: expected title {expected_title!r}, "
+            f"but blockchain election {election_id} is titled {status['title']!r}."
+        )
 
     if status["started"] or status["closed"] or status["cancelled"]:
         raise RuntimeError(
@@ -561,228 +541,381 @@ def get_blockchain_candidate(election_id, candidate_id):
 
 
 # ============================================================
-# SYNCHRONIZE SQLITE WITH BLOCKCHAIN
+# SYNCHRONIZE POSTGRESQL WITH BLOCKCHAIN
 # ============================================================
+
+def _normalise_chain_text(value):
+    """Normalise text for safe, case-insensitive comparison."""
+    return " ".join(str(value or "").split()).casefold()
+
 
 def sync_database_to_blockchain(db):
     from models import Election, Candidate
 
     print("\n==============================================")
     print("BLOCKCHAIN DATABASE SYNCHRONIZATION")
+    print("Database: PostgreSQL via SQLAlchemy")
     print("==============================================")
 
-    elections = (
-        db.query(Election)
-        .filter(Election.is_deleted == False)
-        .order_by(Election.id)
-        .all()
-    )
-
-    if not elections:
-        print("No active SQLite elections found.")
-        return
-
-    blockchain_election_count = get_blockchain_election_count()
-
-    print("SQLite elections:", len(elections))
-    print("Blockchain elections:", blockchain_election_count)
-
-    for election in elections:
-        blockchain_id = election.blockchain_election_id
-
-        if blockchain_id is not None:
-            if blockchain_id < 1 or blockchain_id > blockchain_election_count:
-                print(
-                    f"WARNING: SQLite election {election.id} has invalid "
-                    f"blockchain ID {blockchain_id}. Skipping it."
-                )
-                continue
-
-            try:
-                chain_status = get_blockchain_election_status(blockchain_id)
-
-                if _normalise_chain_text(chain_status["title"]) != _normalise_chain_text(election.title):
-                    print(
-                        f"WARNING: Title mismatch for SQLite election "
-                        f"{election.id} and blockchain election "
-                        f"{blockchain_id}. Skipping it."
-                    )
-                    continue
-            except Exception as exc:
-                print(
-                    f"Unable to verify blockchain election "
-                    f"{blockchain_id}: {exc}"
-                )
-                continue
-
-        else:
-            matched_id = None
-
-            for on_chain_id in range(1, blockchain_election_count + 1):
-                try:
-                    chain_status = get_blockchain_election_status(on_chain_id)
-
-                    if _normalise_chain_text(chain_status["title"]) == _normalise_chain_text(election.title):
-                        matched_id = on_chain_id
-                        break
-                except Exception:
-                    continue
-
-            if matched_id is None:
-                print("Creating blockchain election:", election.title)
-
-                try:
-                    _, matched_id = create_election_on_blockchain(
-                        election.title
-                    )
-                    blockchain_election_count = (
-                        get_blockchain_election_count()
-                    )
-                except Exception as exc:
-                    print(
-                        f"Unable to create blockchain election for "
-                        f"SQLite election {election.id}: {exc}"
-                    )
-                    continue
-
-            existing_mapping = (
-                db.query(Election)
-                .filter(
-                    Election.blockchain_election_id == matched_id,
-                    Election.id != election.id,
-                )
-                .first()
-            )
-
-            if existing_mapping:
-                print(
-                    f"WARNING: Blockchain election {matched_id} is already "
-                    f"mapped to SQLite election {existing_mapping.id}. "
-                    f"SQLite election {election.id} will not be mapped."
-                )
-                continue
-
-            election.blockchain_election_id = matched_id
-
-            try:
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                print(
-                    f"Unable to save blockchain mapping for SQLite "
-                    f"election {election.id}: {exc}"
-                )
-                continue
-
-            blockchain_id = matched_id
-
-            print(
-                f"Mapped SQLite election {election.id} to blockchain "
-                f"election {blockchain_id}"
-            )
-
-        try:
-            blockchain_status = get_blockchain_election_status(blockchain_id)
-        except Exception as exc:
-            print(
-                f"Unable to read blockchain election {blockchain_id}: {exc}"
-            )
-            continue
-
-        candidates = (
-            db.query(Candidate)
-            .filter(Candidate.election_id == election.id)
-            .order_by(Candidate.id)
+    try:
+        elections = (
+            db.query(Election)
+            .filter(Election.is_deleted.is_(False))
+            .order_by(Election.id)
             .all()
         )
 
-        blockchain_candidate_count = get_blockchain_candidate_count(
-            blockchain_id
+        if not elections:
+            print("No non-deleted elections found.")
+            return
+
+        blockchain_election_count = int(
+            get_blockchain_election_count()
         )
 
-        for candidate in candidates:
-            # Match candidates by name and position instead of assuming
-            # SQLite ordering is identical to blockchain ordering.
-            matched_candidate_id = None
+        print("Database elections:", len(elections))
+        print("Blockchain elections:", blockchain_election_count)
 
-            for on_chain_id in range(1, blockchain_candidate_count + 1):
-                try:
-                    chain_candidate = get_blockchain_candidate(
-                        blockchain_id,
-                        on_chain_id,
+        # Existing election mappings must not be assigned to another
+        # database election.
+        mapped_election_ids = {
+            int(row[0])
+            for row in db.query(Election.blockchain_election_id)
+            .filter(Election.blockchain_election_id.isnot(None))
+            .all()
+        }
+
+        for election in elections:
+            blockchain_id = election.blockchain_election_id
+
+            # Verify an existing election mapping before using it.
+            if blockchain_id is not None:
+                blockchain_id = int(blockchain_id)
+
+                if not 1 <= blockchain_id <= blockchain_election_count:
+                    print(
+                        f"INVALID MAPPING: Database election {election.id} "
+                        f"has blockchain ID {blockchain_id}. Skipping."
                     )
+                    continue
 
-                    if (
-                        _normalise_chain_text(chain_candidate["name"]) == _normalise_chain_text(candidate.name)
-                        and _normalise_chain_text(chain_candidate["position"]) == _normalise_chain_text(candidate.position)
-                    ):
-                        matched_candidate_id = on_chain_id
-                        break
+                try:
+                    blockchain_status = get_blockchain_election_status(
+                        blockchain_id
+                    )
                 except Exception as exc:
                     print(
-                        f"Unable to read blockchain candidate {on_chain_id}: "
-                        f"{exc}"
+                        f"Unable to read blockchain election "
+                        f"{blockchain_id}: {exc}"
                     )
+                    continue
 
-            if matched_candidate_id is not None:
-                if candidate.blockchain_candidate_id != matched_candidate_id:
-                    candidate.blockchain_candidate_id = matched_candidate_id
+                if (
+                    _normalise_chain_text(blockchain_status["title"])
+                    != _normalise_chain_text(election.title)
+                ):
+                    print(
+                        f"ELECTION MISMATCH: Database election "
+                        f"{election.id} is titled {election.title!r}, "
+                        f"but blockchain election {blockchain_id} is "
+                        f"titled {blockchain_status['title']!r}. "
+                        "Existing mapping preserved; skipping."
+                    )
+                    continue
+
+            else:
+                # Find an unclaimed blockchain election with the same
+                # title. Duplicate titles are not sufficient to identify
+                # the correct election.
+                matched_ids = []
+
+                for on_chain_id in range(
+                    1, blockchain_election_count + 1
+                ):
+                    if on_chain_id in mapped_election_ids:
+                        continue
+
+                    try:
+                        chain_status = get_blockchain_election_status(
+                            on_chain_id
+                        )
+
+                        if (
+                            _normalise_chain_text(chain_status["title"])
+                            == _normalise_chain_text(election.title)
+                        ):
+                            matched_ids.append(on_chain_id)
+
+                    except Exception as exc:
+                        print(
+                            f"Unable to inspect blockchain election "
+                            f"{on_chain_id}: {exc}"
+                        )
+
+                if len(matched_ids) != 1:
+                    if len(matched_ids) > 1:
+                        print(
+                            f"AMBIGUOUS ELECTION MAPPING: Database "
+                            f"election {election.id} ({election.title!r}) "
+                            f"matches blockchain IDs {matched_ids}. "
+                            "No mapping was changed."
+                        )
+                    else:
+                        print(
+                            f"NO SAFE ELECTION MATCH: Database election "
+                            f"{election.id} ({election.title!r}) has no "
+                            "unique unclaimed blockchain match. "
+                            "No election was created automatically."
+                        )
+
+                    continue
+
+                blockchain_id = matched_ids[0]
+
+                try:
+                    election.blockchain_election_id = blockchain_id
+                    db.commit()
+                    mapped_election_ids.add(blockchain_id)
+
+                    print(
+                        f"Mapped database election {election.id} "
+                        f"to blockchain election {blockchain_id}."
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    print(
+                        f"Unable to save election mapping for "
+                        f"database election {election.id}: {exc}"
+                    )
+                    continue
+
+                # Refresh the ORM object after a successful commit.
+                try:
+                    blockchain_status = get_blockchain_election_status(
+                        blockchain_id
+                    )
+                except Exception as exc:
+                    print(
+                        f"Unable to verify blockchain election "
+                        f"{blockchain_id}: {exc}"
+                    )
+                    continue
+
+            # Load candidates belonging to this database election.
+            candidates = (
+                db.query(Candidate)
+                .filter(Candidate.election_id == election.id)
+                .order_by(Candidate.id)
+                .all()
+            )
+
+            blockchain_candidate_count = int(
+                get_blockchain_candidate_count(blockchain_id)
+            )
+
+            for candidate in candidates:
+                stored_id = candidate.blockchain_candidate_id
+
+                # IDs assigned to other database candidates in this
+                # election must not be reused.
+                mapped_candidate_ids = {
+                    int(row[0])
+                    for row in db.query(
+                        Candidate.blockchain_candidate_id
+                    )
+                    .filter(
+                        Candidate.election_id == election.id,
+                        Candidate.blockchain_candidate_id.isnot(None),
+                        Candidate.id != candidate.id,
+                    )
+                    .all()
+                }
+
+                # Verify an existing candidate mapping. Never silently
+                # overwrite a conflicting stored ID.
+                # Older records may store 0 as a placeholder. Blockchain
+                # candidate IDs are 1-based, so 0 means "unmapped".
+                if stored_id is not None and int(stored_id) > 0:
+                    stored_id = int(stored_id)
+
+                    if stored_id in mapped_candidate_ids:
+                        print(
+                            f"CANDIDATE ID CONFLICT: Database candidate "
+                            f"{candidate.id} shares blockchain candidate "
+                            f"ID {stored_id} with another database "
+                            "candidate in the same election. Skipping."
+                        )
+                        continue
+
+                    if 1 <= stored_id <= blockchain_candidate_count:
+                        try:
+                            chain_candidate = get_blockchain_candidate(
+                                blockchain_id, stored_id
+                            )
+
+                            if (
+                                _normalise_chain_text(
+                                    chain_candidate["name"]
+                                )
+                                == _normalise_chain_text(candidate.name)
+                                and _normalise_chain_text(
+                                    chain_candidate["position"]
+                                )
+                                == _normalise_chain_text(candidate.position)
+                            ):
+                                # The existing mapping is verified.
+                                continue
+
+                        except Exception as exc:
+                            print(
+                                f"Unable to verify candidate "
+                                f"{candidate.id}, blockchain ID "
+                                f"{stored_id}: {exc}"
+                            )
+
+                    print(
+                        f"CANDIDATE MISMATCH: Database candidate "
+                        f"{candidate.id} has blockchain ID {stored_id}, "
+                        "but the on-chain record does not match. "
+                        "Existing mapping preserved for investigation."
+                    )
+                    continue
+
+                # No stored mapping: look for every matching, unclaimed
+                # on-chain candidate.
+                matched_candidate_ids = []
+
+                for on_chain_id in range(
+                    1, blockchain_candidate_count + 1
+                ):
+                    if on_chain_id in mapped_candidate_ids:
+                        continue
+
+                    try:
+                        chain_candidate = get_blockchain_candidate(
+                            blockchain_id, on_chain_id
+                        )
+
+                        if (
+                            _normalise_chain_text(
+                                chain_candidate["name"]
+                            )
+                            == _normalise_chain_text(candidate.name)
+                            and _normalise_chain_text(
+                                chain_candidate["position"]
+                            )
+                            == _normalise_chain_text(candidate.position)
+                        ):
+                            matched_candidate_ids.append(on_chain_id)
+
+                    except Exception as exc:
+                        print(
+                            f"Unable to read blockchain candidate "
+                            f"{on_chain_id}: {exc}"
+                        )
+
+                if len(matched_candidate_ids) == 1:
+                    candidate.blockchain_candidate_id = (
+                        matched_candidate_ids[0]
+                    )
 
                     try:
                         db.commit()
                         print(
-                            f"Mapped SQLite candidate {candidate.id} to "
-                            f"blockchain candidate {matched_candidate_id}."
+                            f"Mapped database candidate {candidate.id} "
+                            f"to blockchain candidate "
+                            f"{matched_candidate_ids[0]} in election "
+                            f"{blockchain_id}."
                         )
                     except Exception as exc:
                         db.rollback()
                         print(
                             f"Unable to save candidate mapping for "
-                            f"candidate {candidate.id}: {exc}"
+                            f"{candidate.id}: {exc}"
                         )
-                continue
 
-            # Never add candidates automatically to a started or terminal
-            # election. A missing match in that state requires investigation.
-            if (
-                not blockchain_status["started"]
-                and not blockchain_status["closed"]
-                and not blockchain_status["cancelled"]
-            ):
-                try:
-                    _, new_candidate_id = add_candidate_to_blockchain(
-                        blockchain_id,
-                        candidate.name,
-                        candidate.position,
-                    )
+                    continue
 
-                    candidate.blockchain_candidate_id = new_candidate_id
-                    db.commit()
-
-                    blockchain_candidate_count = (
-                        get_blockchain_candidate_count(blockchain_id)
-                    )
-                except Exception as exc:
-                    db.rollback()
+                if len(matched_candidate_ids) > 1:
                     print(
-                        f"Unable to register candidate {candidate.name!r} "
-                        f"for blockchain election {blockchain_id}: {exc}"
+                        f"AMBIGUOUS CANDIDATE MAPPING: Database "
+                        f"candidate {candidate.id} matches blockchain "
+                        f"candidate IDs {matched_candidate_ids} in "
+                        f"election {blockchain_id}. Manual review needed."
                     )
-            else:
-                print(
-                    f"WARNING: Candidate {candidate.name!r} was not found "
-                    f"on blockchain election {blockchain_id}. The election "
-                    "has already started or is terminal; no candidate was added."
+                    continue
+
+                # Only register a new candidate before the election
+                # starts and while it is neither closed nor cancelled.
+                if (
+                    not blockchain_status["started"]
+                    and not blockchain_status["closed"]
+                    and not blockchain_status["cancelled"]
+                ):
+                    try:
+                        _, new_candidate_id = add_candidate_to_blockchain(
+                            blockchain_id,
+                            candidate.name,
+                            candidate.position,
+                            expected_title=election.title,
+                        )
+
+                        candidate.blockchain_candidate_id = int(
+                            new_candidate_id
+                        )
+                        db.commit()
+
+                        blockchain_candidate_count = int(
+                            get_blockchain_candidate_count(blockchain_id)
+                        )
+
+                        print(
+                            f"Registered database candidate "
+                            f"{candidate.id} as blockchain candidate "
+                            f"{new_candidate_id} in election "
+                            f"{blockchain_id}."
+                        )
+
+                    except Exception as exc:
+                        db.rollback()
+                        print(
+                            f"Unable to register candidate "
+                            f"{candidate.name!r} in blockchain election "
+                            f"{blockchain_id}: {exc}"
+                        )
+                else:
+                    print(
+                        f"UNMATCHED CANDIDATE: {candidate.name!r} was "
+                        f"not found in blockchain election {blockchain_id}. "
+                        "No automatic changes made because the election "
+                        "has started or is closed/cancelled."
+                    )
+
+            # Report lifecycle differences without changing either side.
+            try:
+                blockchain_status = get_blockchain_election_status(
+                    blockchain_id
                 )
 
-        if bool(blockchain_status.get("active")) != (
-            election.status == "ongoing"
-        ):
-            print(
-                f"Lifecycle reconciliation needed for SQLite election "
-                f"{election.id}: SQLite={election.status!r}, "
-                f"blockchain_active={blockchain_status.get('active')!r}"
-            )
+                if bool(blockchain_status.get("active")) != (
+                    election.status == "ongoing"
+                ):
+                    print(
+                        f"LIFECYCLE DIFFERENCE: Database election "
+                        f"{election.id} status={election.status!r}; "
+                        f"blockchain active="
+                        f"{blockchain_status.get('active')!r}."
+                    )
+            except Exception as exc:
+                print(
+                    f"Unable to compare lifecycle status for election "
+                    f"{election.id}: {exc}"
+                )
+
+    except Exception as exc:
+        db.rollback()
+        print(f"BLOCKCHAIN SYNCHRONIZATION ERROR: {exc}")
+        raise
 
     print("\nBlockchain synchronization complete.")
     print("==============================================")

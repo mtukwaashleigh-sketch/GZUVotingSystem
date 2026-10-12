@@ -167,7 +167,7 @@ def _verify_blockchain_election_mapping(election):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Election mapping conflict: SQLite election {election.id} points "
+                    f"Election mapping conflict: PostgreSQL election {election.id} points "
                     f"to blockchain election {chain_id}, but the connected blockchain "
                     f"contains only {chain_count} elections. No transaction was sent."
                 ),
@@ -185,7 +185,7 @@ def _verify_blockchain_election_mapping(election):
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Election mapping conflict: SQLite election {election.id} is titled "
+                f"Election mapping conflict: PostgreSQL election {election.id} is titled "
                 f"'{election.title}', but its stored blockchain mapping points to "
                 f"blockchain election {chain_id}, titled '{chain_status.get('title')}'. "
                 "No blockchain transaction was sent. Do not change this mapping just "
@@ -851,7 +851,7 @@ def cast_vote(
     )
 
     print(
-        "SQLite candidate ID:",
+        "PostgreSQL candidate ID:",
         candidate.id
     )
 
@@ -1026,7 +1026,7 @@ def get_election_results(
             )
 
             print(
-                "SQLite candidate ID:",
+                "PostgreSQL candidate ID:",
                 candidate.id
             )
 
