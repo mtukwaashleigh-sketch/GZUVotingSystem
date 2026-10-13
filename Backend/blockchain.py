@@ -526,6 +526,124 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
 
 
 # ============================================================
+# SUBMIT VOTE
+# ============================================================
+
+def submit_vote(election_id, candidate_id, voter_hash):
+    election_id = int(election_id)
+    candidate_id = int(candidate_id)
+
+    if candidate_id < 1:
+        raise ValueError(
+            f"Invalid blockchain candidate ID {candidate_id}. "
+            "Candidate IDs start at 1; verify the candidate's on-chain mapping."
+        )
+
+    if isinstance(voter_hash, str):
+        voter_hash = voter_hash.encode("utf-8")
+    if not isinstance(voter_hash, bytes) or len(voter_hash) != 32:
+        raise ValueError("voter_hash must contain exactly 32 bytes.")
+
+    candidate_count = int(get_blockchain_candidate_count(election_id))
+    if candidate_id > candidate_count:
+        raise ValueError(
+            f"Blockchain candidate ID {candidate_id} does not exist in "
+            f"election {election_id}; on-chain candidate count is {candidate_count}."
+        )
+
+    candidate = get_blockchain_candidate(election_id, candidate_id)
+    if not candidate["name"] or not candidate["position"]:
+        raise ValueError(
+            f"Blockchain candidate {candidate_id} is not registered "
+            f"for election {election_id}."
+        )
+
+    status = get_blockchain_election_status(election_id)
+    if not status["started"] or status["closed"] or status["cancelled"]:
+        raise ValueError("Votes can only be submitted while the election is ongoing.")
+
+    print("\nSubmitting vote to blockchain")
+    print("Election:", election_id)
+    print("Candidate:", candidate_id)
+    print("Candidate name:", candidate["name"])
+    print("Position:", candidate["position"])
+
+    receipt = send_transaction(
+        voting_contract.functions.castVote(election_id, candidate_id, voter_hash)
+    )
+    print("Vote successfully recorded.")
+    return receipt
+
+
+# ============================================================
+# END ELECTION
+# ============================================================
+
+def end_election_on_blockchain(election_id):
+    status = get_blockchain_election_status(election_id)
+    if status["closed"]:
+        return None
+    if status["cancelled"]:
+        raise RuntimeError(
+            f"Election {election_id} was cancelled and cannot be closed."
+        )
+    return send_transaction(voting_contract.functions.endElection(int(election_id)))
+
+
+# ============================================================
+# CANCEL ELECTION
+# ============================================================
+
+def cancel_election_on_blockchain(election_id):
+    status = get_blockchain_election_status(election_id)
+    if status["cancelled"]:
+        return None
+    if status["closed"]:
+        raise RuntimeError(
+            f"Election {election_id} is already closed and cannot be cancelled."
+        )
+    return send_transaction(voting_contract.functions.cancelElection(int(election_id)))
+
+
+# ============================================================
+# GET ELECTION STATUS
+# ============================================================
+
+def get_blockchain_election_status(election_id):
+    election_id = int(election_id)
+    election = voting_contract.functions.elections(election_id).call()
+    return {
+        "title": election[0],
+        "active": bool(election[1]),
+        "started": bool(voting_contract.functions.electionStarted(election_id).call()),
+        "closed": bool(voting_contract.functions.electionClosed(election_id).call()),
+        "cancelled": bool(voting_contract.functions.electionCancelled(election_id).call()),
+    }
+
+
+# ============================================================
+# GET VOTE COUNT
+# ============================================================
+
+def get_blockchain_vote_count(election_id, candidate_id):
+    return voting_contract.functions.getVoteCount(
+        int(election_id), int(candidate_id)
+    ).call()
+
+
+def get_candidate_vote_count(election_id, candidate_id):
+    return get_blockchain_vote_count(election_id, candidate_id)
+
+
+# ============================================================
+# GET ELECTION COUNT
+# ============================================================
+
+def get_blockchain_election_count():
+    return voting_contract.functions.electionCount().call()
+
+
+# ============================================================
 # GET CANDIDATE COUNT
 # ============================================================
 
