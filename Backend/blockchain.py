@@ -699,8 +699,9 @@ def _normalise_chain_text(value):
     so distinct candidate positions are not silently treated as equivalent.
     """
     value = unicodedata.normalize("NFKC", str(value or ""))
-    value = value.replace("\\u00a0", " ")
-    for dash in ("\\u2010", "\\u2011", "\\u2012", "\\u2013", "\\u2014", "\\u2212"):
+    # Normalize actual Unicode characters, not the literal text \uXXXX.
+    value = value.replace("\u00a0", " ")
+    for dash in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"):
         value = value.replace(dash, "-")
     return " ".join(value.split()).casefold()
 

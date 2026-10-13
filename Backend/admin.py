@@ -4151,7 +4151,8 @@ def create_candidate(
         from blockchain import (
             add_candidate_to_blockchain,
             get_blockchain_candidate_count,
-            get_blockchain_candidate
+            get_blockchain_candidate,
+            _normalise_chain_text,
         )
 
         existing_candidate = (
@@ -4204,8 +4205,10 @@ def create_candidate(
             blockchain_position = blockchain_candidate["position"]
 
             if (
-                blockchain_name.strip().lower() == name.lower()
-                and blockchain_position.strip().lower() == position.lower()
+                _normalise_chain_text(blockchain_name)
+                == _normalise_chain_text(name)
+                and _normalise_chain_text(blockchain_position)
+                == _normalise_chain_text(position)
             ):
                 matching_unmapped_candidate_ids.append(candidate_id)
 
