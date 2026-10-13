@@ -714,6 +714,16 @@ def sync_database_to_blockchain(db):
             )
 
             for candidate in candidates:
+                # Withdrawal is a database eligibility flag, not an on-chain deletion.
+                # Never register a withdrawn candidate as a new on-chain candidate.
+                # If it already has a mapping, leave that historical mapping untouched.
+                if bool(getattr(candidate, "is_withdrawn", False)) and not candidate.blockchain_candidate_id:
+                    print(
+                        f"Skipping withdrawn candidate {candidate.id} "
+                        f"({candidate.name!r}); no blockchain record will be created."
+                    )
+                    continue
+
                 stored_id = candidate.blockchain_candidate_id
 
                 # IDs assigned to other database candidates in this
@@ -891,13 +901,32 @@ def sync_database_to_blockchain(db):
                         "has started or is closed/cancelled."
                     )
 
-            # Report lifecycle differences without changing either side.
+            # Reconcile terminal on-chain states into PostgreSQL. A cancelled
+            # or closed election must not remain labelled as ongoing in the UI.
+            # This never reopens an election and does not alter blockchain data.
             try:
                 blockchain_status = get_blockchain_election_status(
                     blockchain_id
                 )
 
-                if bool(blockchain_status.get("active")) != (
+                chain_cancelled = bool(blockchain_status.get("cancelled"))
+                chain_closed = bool(blockchain_status.get("closed"))
+
+                if chain_cancelled and election.status not in ("cancelled", "closed"):
+                    election.status = "cancelled"
+                    db.commit()
+                    print(
+                        f"Reconciled election {election.id} to CANCELLED "
+                        "from its blockchain status."
+                    )
+                elif chain_closed and election.status not in ("closed", "cancelled"):
+                    election.status = "closed"
+                    db.commit()
+                    print(
+                        f"Reconciled election {election.id} to CLOSED "
+                        "from its blockchain status."
+                    )
+                elif bool(blockchain_status.get("active")) != (
                     election.status == "ongoing"
                 ):
                     print(
@@ -907,8 +936,9 @@ def sync_database_to_blockchain(db):
                         f"{blockchain_status.get('active')!r}."
                     )
             except Exception as exc:
+                db.rollback()
                 print(
-                    f"Unable to compare lifecycle status for election "
+                    f"Unable to compare/reconcile lifecycle status for election "
                     f"{election.id}: {exc}"
                 )
 
