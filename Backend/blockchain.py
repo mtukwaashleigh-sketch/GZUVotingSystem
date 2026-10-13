@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from web3 import Web3
+from web3.logs import DISCARD
 
 
 # ============================================================
@@ -250,7 +251,7 @@ VOTING_ABI = [
             {"indexed": True, "internalType": "uint256", "name": "electionId", "type": "uint256"},
             {"indexed": True, "internalType": "uint256", "name": "candidateId", "type": "uint256"},
             {"indexed": False, "internalType": "string", "name": "name", "type": "string"},
-            {"indexed": False, "internalType": "string", "name": "position", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "photoUrl", "type": "string"},
         ],
         "name": "CandidateAdded",
         "type": "event",
@@ -330,7 +331,7 @@ def create_election_on_blockchain(title):
     try:
         events = voting_contract.events.ElectionCreated().process_receipt(
             receipt,
-            errors=web3.logs.DISCARD,
+            errors=DISCARD,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -406,12 +407,10 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
     )
 
     try:
-        # Decode this contract's CandidateAdded event from the successful
-        # transaction receipt. Avoid web3.logs.DISCARD here because `web3`
-        # is a Web3 instance in this module and that attribute is not
-        # available in all web3.py versions.
+        # Ignore unrelated logs in the receipt; decode CandidateAdded only.
         events = voting_contract.events.CandidateAdded().process_receipt(
-            receipt
+            receipt,
+            errors=DISCARD,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -424,7 +423,7 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
         event for event in events
         if int(event["args"]["electionId"]) == election_id
         and event["args"]["name"].strip() == name.strip()
-        and event["args"]["position"].strip() == position.strip()
+        and event["args"]["photoUrl"].strip() == position.strip()
     ]
     if len(matches) != 1:
         raise RuntimeError(
