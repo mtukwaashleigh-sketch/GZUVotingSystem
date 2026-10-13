@@ -518,10 +518,29 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
         print(f"Candidate verified on-chain as ID {actual_id}. Transaction: {tx_hash}")
         return receipt, actual_id
 
+    # Include the observed getter state in the error. This is essential for
+    # safe recovery: the event proves a transaction emitted a candidate ID,
+    # but it is not sufficient to map a DB row when the getter disagrees.
+    observed = []
+    for cid in range(1, after_count + 1):
+        try:
+            item = get_blockchain_candidate(election_id, cid)
+            observed.append(
+                f"{cid}: name={item.get('name')!r}, "
+                f"position={item.get('position')!r}"
+            )
+        except Exception as exc:
+            observed.append(f"{cid}: getter error={type(exc).__name__}: {exc}")
+
     raise RuntimeError(
-        "The blockchain transaction succeeded, but the candidate could not be uniquely "
-        f"verified by name and position (event ID={event_id}, matches={exact_ids}). "
-        f"Do not retry automatically. Transaction hash: {tx_hash}"
+        "The blockchain transaction succeeded, but the candidate could not be "
+        "uniquely verified by name and position. "
+        f"Election ID={election_id}; requested name={name!r}; "
+        f"requested position={position!r}; event ID={event_id}; "
+        f"exact getter matches={exact_ids}; on-chain candidate count={after_count}; "
+        f"observed candidates=[{' | '.join(observed)}]. "
+        "Do not retry automatically. Inspect the transaction receipt and deployed "
+        f"contract ABI before reconciling. Transaction hash: {tx_hash}"
     )
 
 
@@ -673,8 +692,17 @@ def get_blockchain_candidate(election_id, candidate_id):
 # ============================================================
 
 def _normalise_chain_text(value):
-    """Normalise text for safe, case-insensitive comparison."""
-    return " ".join(str(value or "").split()).casefold()
+    """Canonicalise harmless Unicode/whitespace differences for mapping checks.
+
+    NFKC handles compatibility characters; common Unicode dash characters are
+    mapped to ASCII hyphen. This does not remove words or punctuation broadly,
+    so distinct candidate positions are not silently treated as equivalent.
+    """
+    value = unicodedata.normalize("NFKC", str(value or ""))
+    value = value.replace("\\u00a0", " ")
+    for dash in ("\\u2010", "\\u2011", "\\u2012", "\\u2013", "\\u2014", "\\u2212"):
+        value = value.replace(dash, "-")
+    return " ".join(value.split()).casefold()
 
 
 def sync_database_to_blockchain(db):
