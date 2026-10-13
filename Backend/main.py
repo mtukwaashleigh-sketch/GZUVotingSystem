@@ -443,8 +443,7 @@ def get_candidates(
     candidates = (
         db.query(Candidate)
         .filter(
-            Candidate.election_id == election_id,
-            Candidate.is_withdrawn == False
+            Candidate.election_id == election_id
         )
         .order_by(Candidate.id)
         .all()
@@ -1028,8 +1027,7 @@ def get_election_results(
     candidates = (
         db.query(Candidate)
         .filter(
-            Candidate.election_id == election_id,
-            Candidate.is_withdrawn == False
+            Candidate.election_id == election_id
         )
         .order_by(Candidate.id)
         .all()

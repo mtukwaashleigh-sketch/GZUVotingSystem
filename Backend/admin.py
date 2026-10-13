@@ -3111,7 +3111,11 @@ def manage_election(
             withdrawn = bool(getattr(candidate, "is_withdrawn", False))
             if withdrawn:
                 action_html = '<span class="status status-closed">Withdrawn</span>'
-            elif election.status == "upcoming" and not election.is_deleted:
+            elif election.is_deleted:
+                action_html = '<span class="status status-closed">Election archived</span>'
+            elif election.status == "cancelled":
+                action_html = '<span class="status status-closed">Election cancelled</span>'
+            elif election.status == "upcoming":
                 action_html = f"""<div class=\"action-buttons\">
                     <a class=\"button\" href=\"/admin/candidates/{candidate.id}/edit\">Edit</a>
                     <form method=\"post\" action=\"/admin/candidates/{candidate.id}/withdraw\" onsubmit=\"return confirm('Withdraw this candidate? The blockchain record will be preserved.');\">
@@ -3119,8 +3123,10 @@ def manage_election(
                         <button type=\"submit\" class=\"button button-danger\">Withdraw</button>
                     </form>
                 </div>"""
+            elif election.status == "ongoing":
+                action_html = '<span>Voting has started; withdrawal unavailable</span>'
             else:
-                action_html = '<span>Withdrawal unavailable after voting starts</span>'
+                action_html = '<span>Election closed; changes unavailable</span>'
             candidate_rows += f"""
             <tr>
                 <td>{candidate.id}</td>
@@ -3661,8 +3667,16 @@ def candidate_management(
 
     try:
 
+        # The main Candidate Management page is for current, usable elections.
+        # Keep candidate rows for audit/history in the database and on-chain, but
+        # do not present candidates from cancelled or archived elections as active.
         candidates = (
             db.query(Candidate)
+            .join(Election, Candidate.election_id == Election.id)
+            .filter(
+                Election.is_deleted.is_(False),
+                Election.status != "cancelled",
+            )
             .order_by(Candidate.id.desc())
             .all()
         )
@@ -3691,7 +3705,11 @@ def candidate_management(
             candidate_status = "Withdrawn" if withdrawn else "Active"
             if withdrawn:
                 action_html = '<span class="status status-closed">Withdrawn</span>'
-            elif election_obj and election_obj.status == "upcoming" and not election_obj.is_deleted:
+            elif election_obj is None or election_obj.is_deleted:
+                action_html = '<span class="status status-closed">Election archived</span>'
+            elif election_obj.status == "cancelled":
+                action_html = '<span class="status status-closed">Election cancelled</span>'
+            elif election_obj.status == "upcoming":
                 action_html = f"""<div class=\"action-buttons\">
                     <a class=\"button\" href=\"/admin/candidates/{candidate.id}/edit\">Edit</a>
                     <form method=\"post\" action=\"/admin/candidates/{candidate.id}/withdraw\" onsubmit=\"return confirm('Withdraw this candidate? The blockchain record will be preserved.');\">
@@ -3699,8 +3717,10 @@ def candidate_management(
                         <button type=\"submit\" class=\"button button-danger\">Withdraw</button>
                     </form>
                 </div>"""
+            elif election_obj.status == "ongoing":
+                action_html = '<span>Voting has started; withdrawal unavailable</span>'
             else:
-                action_html = '<span>Withdrawal unavailable after voting starts</span>'
+                action_html = '<span>Election closed; changes unavailable</span>'
 
             rows += f"""
             <tr>
@@ -4260,8 +4280,7 @@ def admin_results(
 
                 db.query(Candidate)
                 .filter(
-                    Candidate.election_id == election.id,
-                    Candidate.is_withdrawn == False
+                    Candidate.election_id == election.id
                 )
                 .order_by(Candidate.id)
                 .all()
@@ -4404,6 +4423,7 @@ def admin_results(
                                 <strong>
                                     {safe(candidate.name)}
                                 </strong>
+                                {('<span class="status status-closed" style="margin-left:8px;">WITHDRAWN</span>' if bool(getattr(candidate, "is_withdrawn", False)) else '')}
                             </td>
 
                             <td>
