@@ -386,13 +386,12 @@ def start_election_on_blockchain(election_id):
 # ============================================================
 
 def add_candidate_to_blockchain(election_id, name, position, expected_title=None):
-    """Add a candidate and return its ID from this transaction's event."""
-    election_id = int(election_id)
-    print("\nAdding candidate to blockchain")
-    print("Election:", election_id)
-    print("Name:", name)
-    print("Position:", position)
+    """Add a candidate once; recover its ID from the receipt/on-chain state.
 
+    Never retry a transaction just because event decoding or a subsequent
+    getter check fails. A successful receipt may already have changed state.
+    """
+    election_id = int(election_id)
     status = get_blockchain_election_status(election_id)
     if expected_title is not None and _normalise_chain_text(status["title"]) != _normalise_chain_text(expected_title):
         raise RuntimeError(
@@ -402,189 +401,83 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
     if status["started"] or status["closed"] or status["cancelled"]:
         raise RuntimeError("Candidates can only be added before voting starts.")
 
+    # Guard against retrying a candidate that already exists from a previous
+    # transaction whose database save or verification failed.
+    before_count = int(get_blockchain_candidate_count(election_id))
+    existing = []
+    for cid in range(1, before_count + 1):
+        try:
+            item = get_blockchain_candidate(election_id, cid)
+            if (_normalise_chain_text(item["name"]) == _normalise_chain_text(name)
+                    and _normalise_chain_text(item["position"]) == _normalise_chain_text(position)):
+                existing.append(cid)
+        except Exception as exc:
+            print(f"Could not inspect existing candidate {cid}: {exc}")
+    if len(existing) == 1:
+        print(f"Candidate already exists on-chain as ID {existing[0]}; no transaction sent.")
+        return None, existing[0]
+    if len(existing) > 1:
+        raise RuntimeError(
+            f"Multiple on-chain candidates already match {name!r} / {position!r}: {existing}. "
+            "No transaction sent; manual reconciliation required."
+        )
+
     receipt = send_transaction(
         voting_contract.functions.addCandidate(election_id, name, position)
     )
+    tx_hash = receipt["transactionHash"].hex()
+    if int(receipt.get("status", 0)) != 1:
+        raise RuntimeError(f"Candidate transaction failed on-chain. Transaction hash: {tx_hash}")
 
+    # Event parameter names can differ between the deployed contract ABI and
+    # source names (e.g. photoUrl vs position). Match the actual string value
+    # without assuming a particular ABI output name.
     try:
-        # Ignore unrelated logs in the receipt; decode CandidateAdded only.
-        events = voting_contract.events.CandidateAdded().process_receipt(
-            receipt,
-            errors=DISCARD,
-        )
+        events = voting_contract.events.CandidateAdded().process_receipt(receipt, errors=DISCARD)
     except Exception as exc:
         raise RuntimeError(
-            "The transaction succeeded, but CandidateAdded could not be "
-            "decoded. Do not retry automatically. Transaction hash: "
-            f"{receipt['transactionHash'].hex()}"
+            "Candidate transaction succeeded, but its event could not be decoded. "
+            f"Do not retry. Verify transaction {tx_hash} and reconcile the database."
         ) from exc
 
-    matches = [
-        event for event in events
-        if int(event["args"]["electionId"]) == election_id
-        and event["args"]["name"].strip() == name.strip()
-        and event["args"]["photoUrl"].strip() == position.strip()
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            "The transaction succeeded, but exactly one matching "
-            "CandidateAdded event was not found. Do not retry automatically. "
-            f"Transaction hash: {receipt['transactionHash'].hex()}"
-        )
+    matches = []
+    for event in events:
+        args = event.get("args", {})
+        if int(args.get("electionId", -1)) != election_id:
+            continue
+        event_name = args.get("name", "")
+        string_values = [v for v in args.values() if isinstance(v, str)]
+        if (_normalise_chain_text(event_name) == _normalise_chain_text(name)
+                and any(_normalise_chain_text(v) == _normalise_chain_text(position)
+                        for v in string_values)):
+            matches.append(event)
 
-    candidate_id = int(matches[0]["args"]["candidateId"])
-    chain_candidate = get_blockchain_candidate(election_id, candidate_id)
-    if (
-        _normalise_chain_text(chain_candidate["name"]) != _normalise_chain_text(name)
-        or _normalise_chain_text(chain_candidate["position"]) != _normalise_chain_text(position)
-    ):
-        raise RuntimeError(
-            f"CandidateAdded event ID {candidate_id} failed on-chain verification. "
-            "Do not retry automatically."
-        )
+    event_id = int(matches[0]["args"]["candidateId"]) if len(matches) == 1 else None
+    # The contract's getter is the final authority. Search all IDs because
+    # deployed ABI/storage differences can make the event ID inconsistent.
+    after_count = int(get_blockchain_candidate_count(election_id))
+    exact_ids = []
+    for cid in range(1, after_count + 1):
+        try:
+            item = get_blockchain_candidate(election_id, cid)
+            if (_normalise_chain_text(item["name"]) == _normalise_chain_text(name)
+                    and _normalise_chain_text(item["position"]) == _normalise_chain_text(position)):
+                exact_ids.append(cid)
+        except Exception as exc:
+            print(f"Could not verify on-chain candidate {cid}: {exc}")
 
-    print("Blockchain candidate ID:", candidate_id)
-    return receipt, candidate_id
+    if len(exact_ids) == 1:
+        actual_id = exact_ids[0]
+        if event_id is not None and event_id != actual_id:
+            print(f"WARNING: event candidate ID {event_id} differs from getter match {actual_id}; using getter-verified ID.")
+        print(f"Candidate verified on-chain as ID {actual_id}. Transaction: {tx_hash}")
+        return receipt, actual_id
 
-
-# ============================================================
-# SUBMIT VOTE
-# ============================================================
-
-def submit_vote(election_id, candidate_id, voter_hash):
-    election_id = int(election_id)
-    candidate_id = int(candidate_id)
-
-    if candidate_id < 1:
-        raise ValueError(
-            f"Invalid blockchain candidate ID {candidate_id}. "
-            "Candidate IDs start at 1; verify the candidate's on-chain mapping."
-        )
-
-    if isinstance(voter_hash, str):
-        voter_hash = voter_hash.encode("utf-8")
-
-    if not isinstance(voter_hash, bytes) or len(voter_hash) != 32:
-        raise ValueError("voter_hash must contain exactly 32 bytes.")
-
-    candidate_count = get_blockchain_candidate_count(election_id)
-
-    if candidate_id > candidate_count:
-        raise ValueError(
-            f"Blockchain candidate ID {candidate_id} does not exist in "
-            f"election {election_id}; on-chain candidate count is "
-            f"{candidate_count}."
-        )
-
-    candidate = get_blockchain_candidate(election_id, candidate_id)
-
-    if not candidate["name"] or not candidate["position"]:
-        raise ValueError(
-            f"Blockchain candidate {candidate_id} is not registered "
-            f"for election {election_id}."
-        )
-
-    print("\nSubmitting vote to blockchain")
-    print("Election:", election_id)
-    print("Candidate:", candidate_id)
-    print("Candidate name:", candidate["name"])
-    print("Position:", candidate["position"])
-
-    receipt = send_transaction(
-        voting_contract.functions.castVote(
-            election_id,
-            candidate_id,
-            voter_hash,
-        )
+    raise RuntimeError(
+        "The blockchain transaction succeeded, but the candidate could not be uniquely "
+        f"verified by name and position (event ID={event_id}, matches={exact_ids}). "
+        f"Do not retry automatically. Transaction hash: {tx_hash}"
     )
-
-    print("Vote successfully recorded.")
-    return receipt
-
-
-# ============================================================
-# END ELECTION
-# ============================================================
-
-def end_election_on_blockchain(election_id):
-    status = get_blockchain_election_status(election_id)
-
-    if status["closed"]:
-        return None
-
-    if status["cancelled"]:
-        raise RuntimeError(
-            f"Election {election_id} was cancelled and cannot be closed."
-        )
-
-    return send_transaction(
-        voting_contract.functions.endElection(election_id)
-    )
-
-
-# ============================================================
-# CANCEL ELECTION
-# ============================================================
-
-def cancel_election_on_blockchain(election_id):
-    status = get_blockchain_election_status(election_id)
-
-    if status["cancelled"]:
-        return None
-
-    if status["closed"]:
-        raise RuntimeError(
-            f"Election {election_id} is already closed and cannot be cancelled."
-        )
-
-    return send_transaction(
-        voting_contract.functions.cancelElection(election_id)
-    )
-
-
-# ============================================================
-# GET ELECTION STATUS
-# ============================================================
-
-def get_blockchain_election_status(election_id):
-    election = voting_contract.functions.elections(election_id).call()
-
-    return {
-        "title": election[0],
-        "active": bool(election[1]),
-        "started": bool(
-            voting_contract.functions.electionStarted(election_id).call()
-        ),
-        "closed": bool(
-            voting_contract.functions.electionClosed(election_id).call()
-        ),
-        "cancelled": bool(
-            voting_contract.functions.electionCancelled(election_id).call()
-        ),
-    }
-
-
-# ============================================================
-# GET VOTE COUNT
-# ============================================================
-
-def get_blockchain_vote_count(election_id, candidate_id):
-    return voting_contract.functions.getVoteCount(
-        election_id,
-        candidate_id,
-    ).call()
-
-
-def get_candidate_vote_count(election_id, candidate_id):
-    return get_blockchain_vote_count(election_id, candidate_id)
-
-
-# ============================================================
-# GET ELECTION COUNT
-# ============================================================
-
-def get_blockchain_election_count():
-    return voting_contract.functions.electionCount().call()
 
 
 # ============================================================
