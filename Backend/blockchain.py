@@ -274,18 +274,61 @@ voting_contract = web3.eth.contract(
 # ============================================================
 
 def send_transaction(function):
+    """
+    Build and send a transaction using an RPC gas estimate plus a safety
+    margin. A fixed gas limit can be too small as contract storage grows.
+
+    This reduces out-of-gas failures, but no client-side setting can guarantee
+    that a transaction will never run out of gas on every future contract state.
+    """
     nonce = web3.eth.get_transaction_count(
         BLOCKCHAIN_ACCOUNT,
         "pending",
     )
 
+    # Build first without a hard-coded gas limit, then estimate against the
+    # current chain state. If estimation fails, stop before spending gas.
     transaction = function.build_transaction({
         "from": BLOCKCHAIN_ACCOUNT,
         "nonce": nonce,
-        "gas": 500000,
         "gasPrice": web3.eth.gas_price,
         "chainId": web3.eth.chain_id,
     })
+
+    try:
+        estimated_gas = int(web3.eth.estimate_gas(transaction))
+    except Exception as exc:
+        raise RuntimeError(
+            "Blockchain gas estimation failed; transaction was NOT sent. "
+            "Check the contract requirements, account permissions, balance, "
+            f"and RPC endpoint. Details: {exc}"
+        ) from exc
+
+    # Use a 50% buffer, with a minimum 10,000 gas allowance above the estimate.
+    gas_limit = max(
+        estimated_gas + 10_000,
+        (estimated_gas * 150 + 99) // 100,
+    )
+
+    # Keep below the latest block gas limit to avoid submitting a transaction
+    # that cannot fit in a block. Leave a small additional margin.
+    latest_block = web3.eth.get_block("latest")
+    block_gas_limit = int(latest_block["gasLimit"])
+    max_transaction_gas = int(block_gas_limit * 95 // 100)
+
+    if gas_limit > max_transaction_gas:
+        raise RuntimeError(
+            "Estimated gas plus the 50% safety margin exceeds the safe "
+            f"per-transaction limit ({max_transaction_gas:,} gas; estimate "
+            f"{estimated_gas:,}). Transaction was NOT sent. This may indicate "
+            "an unusually expensive operation or a contract/RPC issue."
+        )
+
+    transaction["gas"] = gas_limit
+    print(
+        f"Gas estimate: {estimated_gas:,}; "
+        f"gas limit with 50% safety margin: {gas_limit:,}"
+    )
 
     signed_transaction = web3.eth.account.sign_transaction(
         transaction,
@@ -307,9 +350,11 @@ def send_transaction(function):
         print("Transaction receipt:", dict(receipt))
         print("Chain ID:", web3.eth.chain_id)
         print("Contract address:", voting_contract.address)
-
+        print("Gas limit used:", gas_limit)
         raise RuntimeError(
-            f"Blockchain transaction reverted. Hash: {tx_hash_hex}"
+            f"Blockchain transaction reverted. Hash: {tx_hash_hex}. "
+            "The receipt should be inspected for the revert reason; "
+            "do not blindly retry."
         )
 
     print("Blockchain transaction confirmed:", tx_hash_hex)
