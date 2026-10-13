@@ -406,9 +406,12 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
     )
 
     try:
+        # Decode this contract's CandidateAdded event from the successful
+        # transaction receipt. Avoid web3.logs.DISCARD here because `web3`
+        # is a Web3 instance in this module and that attribute is not
+        # available in all web3.py versions.
         events = voting_contract.events.CandidateAdded().process_receipt(
-            receipt,
-            errors=web3.logs.DISCARD,
+            receipt
         )
     except Exception as exc:
         raise RuntimeError(
