@@ -230,7 +230,25 @@ def _ensure_candidate_blockchain_mapping(db, election, candidate, verified_chain
     expected_position = _normalise_mapping_text(candidate.position)
     stored_id = candidate.blockchain_candidate_id
 
-    if stored_id is not None and int(stored_id) > 0 and int(stored_id) <= count:
+    # Candidate IDs are scoped to an election. Never return an ID that is
+    # already mapped to another database candidate in this same election.
+    mapped_elsewhere = {
+        int(row[0])
+        for row in db.query(Candidate.blockchain_candidate_id)
+        .filter(
+            Candidate.election_id == election.id,
+            Candidate.blockchain_candidate_id.isnot(None),
+            Candidate.id != candidate.id,
+        )
+        .all()
+    }
+
+    if (
+        stored_id is not None
+        and int(stored_id) > 0
+        and int(stored_id) <= count
+        and int(stored_id) not in mapped_elsewhere
+    ):
         try:
             chain_candidate = get_blockchain_candidate(verified_chain_id, int(stored_id))
             if (
@@ -244,6 +262,8 @@ def _ensure_candidate_blockchain_mapping(db, election, candidate, verified_chain
 
     matches = []
     for on_chain_id in range(1, count + 1):
+        if on_chain_id in mapped_elsewhere:
+            continue
         try:
             chain_candidate = get_blockchain_candidate(verified_chain_id, on_chain_id)
         except Exception as exc:

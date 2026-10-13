@@ -2953,10 +2953,39 @@ def create_election(
 
         from blockchain import create_election_on_blockchain
 
-        (
-            blockchain_receipt,
-            blockchain_election_id
-        ) = create_election_on_blockchain(title)
+        # Recover a blockchain election created by a previous request whose
+        # database save/HTTP response failed. Reuse only a unique, unmapped match.
+        from blockchain import get_blockchain_election_count, get_blockchain_election_status
+
+        mapped_chain_ids = {
+            int(row[0])
+            for row in db.query(Election.blockchain_election_id)
+            .filter(Election.blockchain_election_id.isnot(None))
+            .all()
+        }
+        matching_unmapped_ids = []
+        chain_count = int(get_blockchain_election_count())
+        for chain_id in range(1, chain_count + 1):
+            if chain_id in mapped_chain_ids:
+                continue
+            try:
+                chain_status = get_blockchain_election_status(chain_id)
+                normal_title = lambda value: " ".join(str(value or "").split()).casefold()
+                if normal_title(chain_status.get("title")) == normal_title(title):
+                    matching_unmapped_ids.append(chain_id)
+            except Exception as verify_error:
+                print(f"Could not inspect blockchain election {chain_id}: {verify_error}")
+
+        if len(matching_unmapped_ids) == 1:
+            blockchain_election_id = matching_unmapped_ids[0]
+            print(f"Recovering existing unmapped blockchain election {blockchain_election_id} for {title!r}.")
+        elif len(matching_unmapped_ids) > 1:
+            raise ValueError(
+                f"Several unmapped blockchain elections have the title {title!r}: "
+                f"{matching_unmapped_ids}. No new election was created; reconcile manually."
+            )
+        else:
+            _blockchain_receipt, blockchain_election_id = create_election_on_blockchain(title)
 
         blockchain_election_id = int(blockchain_election_id)
 
@@ -4134,14 +4163,24 @@ def create_candidate(
 
         blockchain_candidate_id = None
 
-        blockchain_candidate_count = (
-            get_blockchain_candidate_count(blockchain_id)
-        )
+        # Recover a candidate transaction that mined before a prior request
+        # failed to save its database row. Never reuse an ID already mapped.
+        mapped_candidate_ids = {
+            int(row[0])
+            for row in db.query(Candidate.blockchain_candidate_id)
+            .filter(
+                Candidate.election_id == election_id,
+                Candidate.blockchain_candidate_id.isnot(None),
+            )
+            .all()
+        }
 
-        for candidate_id in range(
-            1,
-            blockchain_candidate_count + 1
-        ):
+        blockchain_candidate_count = get_blockchain_candidate_count(blockchain_id)
+        matching_unmapped_candidate_ids = []
+
+        for candidate_id in range(1, blockchain_candidate_count + 1):
+            if candidate_id in mapped_candidate_ids:
+                continue
             blockchain_candidate = get_blockchain_candidate(
                 blockchain_id,
                 candidate_id
@@ -4154,8 +4193,16 @@ def create_candidate(
                 blockchain_name.strip().lower() == name.lower()
                 and blockchain_position.strip().lower() == position.lower()
             ):
-                blockchain_candidate_id = candidate_id
-                break
+                matching_unmapped_candidate_ids.append(candidate_id)
+
+        if len(matching_unmapped_candidate_ids) == 1:
+            blockchain_candidate_id = matching_unmapped_candidate_ids[0]
+        elif len(matching_unmapped_candidate_ids) > 1:
+            raise ValueError(
+                f"Multiple unassigned blockchain candidates match {name!r} "
+                f"for {position!r}: {matching_unmapped_candidate_ids}. "
+                "No candidate was added; manual reconciliation is required."
+            )
 
         if blockchain_candidate_id is None:
             (
@@ -4164,7 +4211,8 @@ def create_candidate(
             ) = add_candidate_to_blockchain(
                 blockchain_id,
                 name,
-                position
+                position,
+                expected_title=election.title,
             )
 
         candidate = Candidate(
