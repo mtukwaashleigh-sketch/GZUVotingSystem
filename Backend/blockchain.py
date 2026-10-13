@@ -235,6 +235,26 @@ VOTING_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "uint256", "name": "electionId", "type": "uint256"},
+            {"indexed": False, "internalType": "string", "name": "title", "type": "string"},
+        ],
+        "name": "ElectionCreated",
+        "type": "event",
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "uint256", "name": "electionId", "type": "uint256"},
+            {"indexed": True, "internalType": "uint256", "name": "candidateId", "type": "uint256"},
+            {"indexed": False, "internalType": "string", "name": "name", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "position", "type": "string"},
+        ],
+        "name": "CandidateAdded",
+        "type": "event",
+    },
 ]
 
 
@@ -300,15 +320,45 @@ def send_transaction(function):
 # ============================================================
 
 def create_election_on_blockchain(title):
+    """Create an election and return the ID emitted by this transaction."""
     print("\nCreating election on blockchain:", title)
 
     receipt = send_transaction(
         voting_contract.functions.createElection(title)
     )
 
-    election_id = voting_contract.functions.electionCount().call()
+    try:
+        events = voting_contract.events.ElectionCreated().process_receipt(
+            receipt,
+            errors=web3.logs.DISCARD,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "The transaction succeeded, but ElectionCreated could not be "
+            "decoded. Do not retry automatically. Transaction hash: "
+            f"{receipt['transactionHash'].hex()}"
+        ) from exc
 
-    print("Blockchain election ID:", election_id)
+    matches = [
+        event for event in events
+        if event["args"]["title"].strip() == title.strip()
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "The transaction succeeded, but exactly one matching "
+            "ElectionCreated event was not found. Do not retry automatically. "
+            f"Transaction hash: {receipt['transactionHash'].hex()}"
+        )
+
+    election_id = int(matches[0]["args"]["electionId"])
+    chain_status = get_blockchain_election_status(election_id)
+    if _normalise_chain_text(chain_status["title"]) != _normalise_chain_text(title):
+        raise RuntimeError(
+            f"ElectionCreated event ID {election_id} failed on-chain title "
+            "verification. Do not retry automatically."
+        )
+
+    print("Verified blockchain election ID:", election_id)
     return receipt, election_id
 
 
@@ -335,44 +385,64 @@ def start_election_on_blockchain(election_id):
 # ============================================================
 
 def add_candidate_to_blockchain(election_id, name, position, expected_title=None):
+    """Add a candidate and return its ID from this transaction's event."""
+    election_id = int(election_id)
     print("\nAdding candidate to blockchain")
     print("Election:", election_id)
     print("Name:", name)
     print("Position:", position)
 
     status = get_blockchain_election_status(election_id)
-
     if expected_title is not None and _normalise_chain_text(status["title"]) != _normalise_chain_text(expected_title):
         raise RuntimeError(
             f"Election mapping mismatch: expected title {expected_title!r}, "
             f"but blockchain election {election_id} is titled {status['title']!r}."
         )
-
     if status["started"] or status["closed"] or status["cancelled"]:
-        raise RuntimeError(
-            "Candidates can only be added before voting starts."
-        )
+        raise RuntimeError("Candidates can only be added before voting starts.")
 
     receipt = send_transaction(
-        voting_contract.functions.addCandidate(
-            election_id,
-            name,
-            position,
+        voting_contract.functions.addCandidate(election_id, name, position)
+    )
+
+    try:
+        events = voting_contract.events.CandidateAdded().process_receipt(
+            receipt,
+            errors=web3.logs.DISCARD,
         )
-    )
-
-    blockchain_candidate_id = (
-        voting_contract.functions.candidateCount(election_id).call()
-    )
-
-    if blockchain_candidate_id < 1:
+    except Exception as exc:
         raise RuntimeError(
-            "Candidate registration transaction succeeded, but the "
-            "blockchain candidate count is invalid."
+            "The transaction succeeded, but CandidateAdded could not be "
+            "decoded. Do not retry automatically. Transaction hash: "
+            f"{receipt['transactionHash'].hex()}"
+        ) from exc
+
+    matches = [
+        event for event in events
+        if int(event["args"]["electionId"]) == election_id
+        and event["args"]["name"].strip() == name.strip()
+        and event["args"]["position"].strip() == position.strip()
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "The transaction succeeded, but exactly one matching "
+            "CandidateAdded event was not found. Do not retry automatically. "
+            f"Transaction hash: {receipt['transactionHash'].hex()}"
         )
 
-    print("Blockchain candidate ID:", blockchain_candidate_id)
-    return receipt, blockchain_candidate_id
+    candidate_id = int(matches[0]["args"]["candidateId"])
+    chain_candidate = get_blockchain_candidate(election_id, candidate_id)
+    if (
+        _normalise_chain_text(chain_candidate["name"]) != _normalise_chain_text(name)
+        or _normalise_chain_text(chain_candidate["position"]) != _normalise_chain_text(position)
+    ):
+        raise RuntimeError(
+            f"CandidateAdded event ID {candidate_id} failed on-chain verification. "
+            "Do not retry automatically."
+        )
+
+    print("Blockchain candidate ID:", candidate_id)
+    return receipt, candidate_id
 
 
 # ============================================================
