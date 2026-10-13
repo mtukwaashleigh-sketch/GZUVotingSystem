@@ -1836,18 +1836,32 @@ def admin_dashboard(
             Voter
         ).count()
 
-        election_count = db.query(
-            Election
-        ).count()
+        # Dashboard totals describe usable elections only. Archived elections
+        # (is_deleted=True) and cancelled elections remain in the database for
+        # audit/history, but are excluded from active dashboard statistics.
+        active_election_filter = (
+            Election.is_deleted.is_(False),
+            Election.status != "cancelled",
+        )
 
-        candidate_count = db.query(
-            Candidate
-        ).count()
+        election_count = (
+            db.query(Election)
+            .filter(*active_election_filter)
+            .count()
+        )
+
+        candidate_count = (
+            db.query(Candidate)
+            .join(Election, Candidate.election_id == Election.id)
+            .filter(*active_election_filter)
+            .count()
+        )
 
         ongoing_count = (
             db.query(Election)
             .filter(
-                Election.status == "ongoing"
+                Election.is_deleted.is_(False),
+                Election.status == "ongoing",
             )
             .count()
         )
