@@ -1,6 +1,7 @@
 import unicodedata
 import os
 import json
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -251,7 +252,7 @@ VOTING_ABI = [
             {"indexed": True, "internalType": "uint256", "name": "electionId", "type": "uint256"},
             {"indexed": True, "internalType": "uint256", "name": "candidateId", "type": "uint256"},
             {"indexed": False, "internalType": "string", "name": "name", "type": "string"},
-            {"indexed": False, "internalType": "string", "name": "photoUrl", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "position", "type": "string"},
         ],
         "name": "CandidateAdded",
         "type": "event",
@@ -397,12 +398,30 @@ def create_election_on_blockchain(title):
         )
 
     election_id = int(matches[0]["args"]["electionId"])
-    chain_status = get_blockchain_election_status(election_id)
-    if _normalise_chain_text(chain_status["title"]) != _normalise_chain_text(title):
-        raise RuntimeError(
-            f"ElectionCreated event ID {election_id} failed on-chain title "
-            "verification. Do not retry automatically."
-        )
+
+    # A receipt may be visible before a load-balanced RPC read endpoint has
+    # caught up. Retry only the read/verification, never createElection itself.
+    deadline = time.monotonic() + 12.0
+    chain_status = None
+    last_read_error = None
+    while True:
+        try:
+            chain_status = get_blockchain_election_status(election_id)
+            if _normalise_chain_text(chain_status["title"]) == _normalise_chain_text(title):
+                break
+        except Exception as exc:
+            last_read_error = exc
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"ElectionCreated transaction succeeded, but election {election_id} "
+                f"was not visible/verified by the RPC read endpoint within 12 seconds. "
+                f"Chain ID={web3.eth.chain_id}; contract={CONTRACT_ADDRESS}; "
+                f"receipt block={receipt.get('blockNumber')}; "
+                f"last read error={last_read_error!r}. Do not retry automatically. "
+                f"Transaction hash: {receipt['transactionHash'].hex()}"
+            )
+        time.sleep(0.75)
 
     print("Verified blockchain election ID:", election_id)
     return receipt, election_id
@@ -498,18 +517,46 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
             matches.append(event)
 
     event_id = int(matches[0]["args"]["candidateId"]) if len(matches) == 1 else None
-    # The contract's getter is the final authority. Search all IDs because
-    # deployed ABI/storage differences can make the event ID inconsistent.
-    after_count = int(get_blockchain_candidate_count(election_id))
+    # RPC providers can acknowledge a mined transaction before every backend
+    # used by subsequent eth_call requests has caught up. Poll READS only; never
+    # resend the transaction. Use the event candidate ID as a useful lower bound
+    # when the event was decoded unambiguously.
+    event_candidate_id = event_id
+    deadline = time.monotonic() + 12.0
+    after_count = 0
     exact_ids = []
-    for cid in range(1, after_count + 1):
+    last_read_error = None
+
+    while True:
         try:
-            item = get_blockchain_candidate(election_id, cid)
-            if (_normalise_chain_text(item["name"]) == _normalise_chain_text(name)
-                    and _normalise_chain_text(item["position"]) == _normalise_chain_text(position)):
-                exact_ids.append(cid)
+            after_count = int(get_blockchain_candidate_count(election_id))
+            exact_ids = []
+            for cid in range(1, after_count + 1):
+                try:
+                    item = get_blockchain_candidate(election_id, cid)
+                    if (_normalise_chain_text(item["name"]) == _normalise_chain_text(name)
+                            and _normalise_chain_text(item["position"]) == _normalise_chain_text(position)):
+                        exact_ids.append(cid)
+                except Exception as exc:
+                    last_read_error = exc
+
+            # Stop early when the expected candidate is uniquely visible.
+            if len(exact_ids) == 1:
+                break
+
+            # If the receipt clearly identifies a new candidate ID but the
+            # read endpoint is behind, continue waiting for the state to appear.
+            if event_candidate_id is not None and after_count >= event_candidate_id:
+                # Candidate count has caught up; a mismatch is no longer just
+                # explained by a stale count, so one short final polling window
+                # is still allowed for candidate getter consistency.
+                pass
         except Exception as exc:
-            print(f"Could not verify on-chain candidate {cid}: {exc}")
+            last_read_error = exc
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.75)
 
     if len(exact_ids) == 1:
         actual_id = exact_ids[0]
@@ -539,6 +586,9 @@ def add_candidate_to_blockchain(election_id, name, position, expected_title=None
         f"requested position={position!r}; event ID={event_id}; "
         f"exact getter matches={exact_ids}; on-chain candidate count={after_count}; "
         f"observed candidates=[{' | '.join(observed)}]. "
+        f"Chain ID={web3.eth.chain_id}; contract={CONTRACT_ADDRESS}; "
+        f"receipt block={receipt.get('blockNumber')}; "
+        f"last read error={last_read_error!r}. "
         "Do not retry automatically. Inspect the transaction receipt and deployed "
         f"contract ABI before reconciling. Transaction hash: {tx_hash}"
     )
