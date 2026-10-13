@@ -98,6 +98,14 @@ class Candidate(Base):
         nullable=True
     )
 
+    # Soft withdrawal: keep the database row and blockchain mapping/history.
+    is_withdrawn = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false")
+    )
+
 
 class VotingRecord(Base):
 

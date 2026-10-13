@@ -17,6 +17,7 @@ from fastapi import (
     Form
 )
 
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from fastapi.staticfiles import StaticFiles
 
@@ -64,6 +65,22 @@ from blockchain import (
 Base.metadata.create_all(
     bind=engine
 )
+
+# Add the withdrawal flag to existing installations without dropping or resetting data.
+# create_all() does not add columns to tables that already exist.
+try:
+    candidate_columns = {column["name"] for column in inspect(engine).get_columns("candidates")}
+    if "is_withdrawn" not in candidate_columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE candidates ADD COLUMN is_withdrawn BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+except Exception as migration_error:
+    # Fail loudly rather than run the application with withdrawal checks unavailable.
+    raise RuntimeError(
+        "Could not apply the candidates.is_withdrawn database migration. "
+        "Check database permissions and schema."
+    ) from migration_error
 
 
 # ============================================================
@@ -426,7 +443,8 @@ def get_candidates(
     candidates = (
         db.query(Candidate)
         .filter(
-            Candidate.election_id == election_id
+            Candidate.election_id == election_id,
+            Candidate.is_withdrawn == False
         )
         .order_by(Candidate.id)
         .all()
@@ -458,7 +476,10 @@ def get_candidates(
 # CANDIDATE NOMINATIONS AND PROFILES
 # ============================================================
 
-def _nomination_payload(item):
+def _nomination_payload(item, db=None):
+    linked_candidate = None
+    if db is not None and item.candidate_id is not None:
+        linked_candidate = db.query(Candidate).filter(Candidate.id == item.candidate_id).first()
     return {
         "id": item.id, "student_id": item.student_id, "election_id": item.election_id,
         "position": item.position, "full_name": item.full_name, "faculty": item.faculty,
@@ -466,7 +487,9 @@ def _nomination_payload(item):
         "year_of_study": item.year_of_study, "manifesto": item.manifesto,
         "experience": item.experience, "photo_url": f"/candidate-photos/{item.photo_path}",
         "status": item.status, "admin_feedback": item.admin_feedback,
-        "candidate_id": item.candidate_id, "created_at": item.created_at, "reviewed_at": item.reviewed_at,
+        "candidate_id": item.candidate_id,
+        "candidate_withdrawn": bool(linked_candidate and linked_candidate.is_withdrawn),
+        "created_at": item.created_at, "reviewed_at": item.reviewed_at,
     }
 
 
@@ -517,7 +540,7 @@ async def submit_candidate_nomination(
         created_at=datetime.now(timezone.utc).isoformat()
     )
     db.add(item); db.commit(); db.refresh(item)
-    return _nomination_payload(item)
+    return _nomination_payload(item, db)
 
 
 @app.get("/students/{student_id}/nominations")
@@ -525,13 +548,13 @@ def get_student_nominations(student_id: str, db: Session = Depends(get_db)):
     if not db.query(Voter).filter(Voter.student_id == student_id).first():
         raise HTTPException(status_code=404, detail="Student account not found.")
     items = db.query(CandidateNomination).filter(CandidateNomination.student_id == student_id).order_by(CandidateNomination.id.desc()).all()
-    return [_nomination_payload(item) for item in items]
+    return [_nomination_payload(item, db) for item in items]
 
 
 @app.get("/candidates/{candidate_id}/profile")
 def get_candidate_profile(candidate_id: int, db: Session = Depends(get_db)):
     candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
-    if not candidate:
+    if not candidate or candidate.is_withdrawn:
         raise HTTPException(status_code=404, detail="Candidate not found.")
     profile = db.query(CandidateProfile).filter(CandidateProfile.candidate_id == candidate_id).first()
     return {
@@ -551,7 +574,7 @@ def admin_list_nominations(status: str = "pending", _admin: dict = Depends(requi
     query = db.query(CandidateNomination)
     if status != "all":
         query = query.filter(CandidateNomination.status == status)
-    return [_nomination_payload(item) for item in query.order_by(CandidateNomination.id.desc()).all()]
+    return [_nomination_payload(item, db) for item in query.order_by(CandidateNomination.id.desc()).all()]
 
 
 @app.post("/admin/api/nominations/{nomination_id}/review")
@@ -613,6 +636,26 @@ def admin_review_nomination(
             )
 
         blockchain_id = election.blockchain_election_id
+
+        # Do not recreate a candidate that was deliberately withdrawn. Its on-chain
+        # record remains immutable and must not be duplicated by nomination review.
+        existing_candidate = (
+            db.query(Candidate)
+            .filter(
+                Candidate.election_id == item.election_id,
+                Candidate.name == item.full_name,
+                Candidate.position == item.position,
+            )
+            .first()
+        )
+        if existing_candidate is not None and existing_candidate.is_withdrawn:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A matching candidate has been withdrawn. The existing blockchain "
+                    "record is preserved, so this nomination cannot create a duplicate."
+                ),
+            )
 
         try:
             _receipt, chain_id = add_candidate_to_blockchain(
@@ -763,13 +806,15 @@ def cast_vote(
     )
 
     if not candidate:
-
         raise HTTPException(
             status_code=404,
-            detail=(
-                "Candidate not found "
-                "for this election"
-            )
+            detail="Candidate not found for this election"
+        )
+
+    if candidate.is_withdrawn:
+        raise HTTPException(
+            status_code=409,
+            detail="This candidate has withdrawn and cannot receive votes."
         )
 
     # --------------------------------------------------------
@@ -983,7 +1028,8 @@ def get_election_results(
     candidates = (
         db.query(Candidate)
         .filter(
-            Candidate.election_id == election_id
+            Candidate.election_id == election_id,
+            Candidate.is_withdrawn == False
         )
         .order_by(Candidate.id)
         .all()

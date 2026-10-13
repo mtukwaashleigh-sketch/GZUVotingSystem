@@ -3108,41 +3108,28 @@ def manage_election(
         candidate_rows = ""
 
         for candidate in candidates:
-
+            withdrawn = bool(getattr(candidate, "is_withdrawn", False))
+            if withdrawn:
+                action_html = '<span class="status status-closed">Withdrawn</span>'
+            elif election.status == "upcoming" and not election.is_deleted:
+                action_html = f"""<div class=\"action-buttons\">
+                    <a class=\"button\" href=\"/admin/candidates/{candidate.id}/edit\">Edit</a>
+                    <form method=\"post\" action=\"/admin/candidates/{candidate.id}/withdraw\" onsubmit=\"return confirm('Withdraw this candidate? The blockchain record will be preserved.');\">
+                        {csrf_input(request)}
+                        <button type=\"submit\" class=\"button button-danger\">Withdraw</button>
+                    </form>
+                </div>"""
+            else:
+                action_html = '<span>Withdrawal unavailable after voting starts</span>'
             candidate_rows += f"""
-
             <tr>
-
-                <td>
-                    {candidate.id}
-                </td>
-
-                <td>
-                    <strong>
-                        {safe(candidate.name)}
-                    </strong>
-                </td>
-
-                <td>
-                    {safe(candidate.position)}
-                </td>
-
-                <td>
-                    {candidate.blockchain_candidate_id or "-"}
-                </td>
-                <td>
-                    <div class="action-buttons">
-                        <a class="button" href="/admin/candidates/{candidate.id}/edit">Edit</a>
-                        <form method="post" action="/admin/candidates/{candidate.id}/delete"
-                              onsubmit="return confirm('Delete this candidate? Associated votes and profile will also be removed.');">
-                            {csrf_input(request)}
-                            <button type="submit" class="button button-danger">Delete</button>
-                        </form>
-                    </div>
-                </td>
-
+                <td>{candidate.id}</td>
+                <td><strong>{safe(candidate.name)}</strong></td>
+                <td>{safe(candidate.position)}</td>
+                <td>{candidate.blockchain_candidate_id or "-"}</td>
+                <td>{"Withdrawn" if withdrawn else "Active"}</td>
+                <td>{action_html}</td>
             </tr>
-
             """
 
         status = (
@@ -3316,6 +3303,7 @@ def manage_election(
                                 <th>Name</th>
                                 <th>Position</th>
                                 <th>Blockchain ID</th>
+                                <th>Status</th>
                                 <th>Actions</th>
 
                             </tr>
@@ -3331,7 +3319,7 @@ def manage_election(
                                 else
                                 '''
                                 <tr>
-                                    <td colspan="4">
+                                    <td colspan="6">
 
                                         <div class="empty-state">
 
@@ -3693,45 +3681,37 @@ def candidate_management(
         }
 
         rows = ""
+        election_objects = {election.id: election for election in elections}
 
         for candidate in candidates:
 
-            election_title = (
-                election_lookup.get(
-                    candidate.election_id,
-                    "Unknown"
-                )
-            )
+            election_title = election_lookup.get(candidate.election_id, "Unknown")
+            election_obj = election_objects.get(candidate.election_id)
+            withdrawn = bool(getattr(candidate, "is_withdrawn", False))
+            candidate_status = "Withdrawn" if withdrawn else "Active"
+            if withdrawn:
+                action_html = '<span class="status status-closed">Withdrawn</span>'
+            elif election_obj and election_obj.status == "upcoming" and not election_obj.is_deleted:
+                action_html = f"""<div class=\"action-buttons\">
+                    <a class=\"button\" href=\"/admin/candidates/{candidate.id}/edit\">Edit</a>
+                    <form method=\"post\" action=\"/admin/candidates/{candidate.id}/withdraw\" onsubmit=\"return confirm('Withdraw this candidate? The blockchain record will be preserved.');\">
+                        {csrf_input(request)}
+                        <button type=\"submit\" class=\"button button-danger\">Withdraw</button>
+                    </form>
+                </div>"""
+            else:
+                action_html = '<span>Withdrawal unavailable after voting starts</span>'
 
             rows += f"""
-
             <tr>
-
-                <td>
-                    {candidate.id}
-                </td>
-
-                <td>
-                    <strong>
-                        {safe(candidate.name)}
-                    </strong>
-                </td>
-
-                <td>
-                    {safe(candidate.position)}
-                </td>
-
-                <td>
-                    {safe(election_title)}
-                </td>
-
-                <td>
-                    {candidate.blockchain_candidate_id or "-"}
-                </td>
-                <td><a class="button" href="/admin/candidates/{candidate.id}/edit">Edit</a></td>
-
+                <td>{candidate.id}</td>
+                <td><strong>{safe(candidate.name)}</strong></td>
+                <td>{safe(candidate.position)}</td>
+                <td>{safe(election_title)}</td>
+                <td>{candidate.blockchain_candidate_id or "-"}</td>
+                <td>{candidate_status}</td>
+                <td>{action_html}</td>
             </tr>
-
             """
 
         content = f"""
@@ -3791,6 +3771,7 @@ def candidate_management(
                                 <th>Position</th>
                                 <th>Election</th>
                                 <th>Blockchain ID</th>
+                                <th>Status</th>
                                 <th>Actions</th>
 
                             </tr>
@@ -3806,7 +3787,7 @@ def candidate_management(
                                 else
                                 '''
                                 <tr>
-                                    <td colspan="6">
+                                    <td colspan="7">
 
                                         <div class="empty-state">
 
@@ -4279,8 +4260,8 @@ def admin_results(
 
                 db.query(Candidate)
                 .filter(
-                    Candidate.election_id
-                    == election.id
+                    Candidate.election_id == election.id,
+                    Candidate.is_withdrawn == False
                 )
                 .order_by(Candidate.id)
                 .all()
@@ -4589,6 +4570,14 @@ def admin_nominations(
         else:
             cards = []
             for item in nominations:
+                linked_candidate = (
+                    db.query(Candidate).filter(Candidate.id == item.candidate_id).first()
+                    if item.candidate_id is not None else None
+                )
+                withdrawal_note = (
+                    '<p><strong>Candidate status:</strong> Withdrawn (blockchain record preserved).</p>'
+                    if linked_candidate is not None and linked_candidate.is_withdrawn else ''
+                )
                 photo = f'/candidate-photos/{safe(item.photo_path)}' if item.photo_path else ''
                 photo_html = f'<img src="{photo}" alt="Candidate photo" style="width:120px;height:140px;object-fit:cover;border-radius:10px;">' if photo else '<div style="width:120px;height:140px;background:#eee;border-radius:10px;display:flex;align-items:center;justify-content:center;">No photo</div>'
                 feedback = safe(item.admin_feedback)
@@ -4614,6 +4603,7 @@ def admin_nominations(
                     <div style="flex:1;min-width:240px;">
                       <h3 style="margin:0 0 8px;">{safe(item.full_name)} — {safe(item.position)}</h3>
                       <p><strong>Status:</strong> {status_label} &nbsp; <strong>Nomination ID:</strong> {item.id}</p>
+                      {withdrawal_note}
                       <p><strong>Student ID:</strong> {safe(item.student_id)} &nbsp; <strong>Election ID:</strong> {item.election_id}</p>
                       <p><strong>Faculty:</strong> {safe(item.faculty)} &nbsp; <strong>Department:</strong> {safe(item.department)}</p>
                       <p><strong>Programme:</strong> {safe(item.programme)} &nbsp; <strong>Year:</strong> {safe(item.year_of_study)}</p>
@@ -4750,6 +4740,14 @@ def admin_review_nomination_page(
                 ):
                     existing_candidate = stored_candidate
                     break
+
+            if existing_candidate is not None and getattr(existing_candidate, "is_withdrawn", False):
+                set_flash(
+                    request,
+                    "This candidate has been withdrawn. The existing blockchain record "
+                    "will be preserved; do not approve a duplicate registration."
+                )
+                return RedirectResponse("/admin/nominations", status_code=303)
 
             try:
                 from blockchain import (
@@ -4912,6 +4910,48 @@ def delete_voter(
         db.rollback()
         raise
 
+    finally:
+        db.close()
+
+
+@router.post("/admin/candidates/{candidate_id}/withdraw")
+def withdraw_candidate(
+    request: Request,
+    candidate_id: int,
+    admin: str = Depends(require_admin),
+):
+    """Withdraw a candidate from the local election without deleting on-chain history."""
+    db = get_db()
+    try:
+        candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+        if candidate is None:
+            set_flash(request, "Candidate was not found.")
+            return RedirectResponse("/admin/candidates", status_code=303)
+
+        election = db.query(Election).filter(Election.id == candidate.election_id).first()
+        if election is None or election.is_deleted:
+            set_flash(request, "The candidate's election was not found or is archived.")
+            return RedirectResponse("/admin/candidates", status_code=303)
+
+        if election.status != "upcoming":
+            set_flash(request, "Candidates can only be withdrawn before voting starts.")
+            return RedirectResponse("/admin/candidates", status_code=303)
+
+        if candidate.is_withdrawn:
+            set_flash(request, "This candidate has already been withdrawn.")
+            return RedirectResponse("/admin/candidates", status_code=303)
+
+        candidate.is_withdrawn = True
+        db.commit()
+        set_flash(
+            request,
+            f"{candidate.name} was withdrawn. The blockchain candidate record and mapping were preserved."
+        )
+        return RedirectResponse(f"/admin/elections/{candidate.election_id}", status_code=303)
+    except Exception:
+        db.rollback()
+        set_flash(request, "Unable to withdraw candidate. No blockchain record was deleted.")
+        return RedirectResponse("/admin/candidates", status_code=303)
     finally:
         db.close()
 
