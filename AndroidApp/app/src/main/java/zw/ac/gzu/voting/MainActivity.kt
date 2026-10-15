@@ -573,7 +573,7 @@ fun WelcomeScreen(
 
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "STUDENT VOTING",
+                text = "INSTITUTIONAL VOTING",
                 color = Color(0xFFD4F3E1),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -875,7 +875,7 @@ fun LoginScreen(
 
                         Text(
                             text =
-                                "Sign in to participate in your student election.",
+                                "Sign in to participate in institutional elections.",
 
                             fontSize =
                                 15.sp,
@@ -901,7 +901,7 @@ fun LoginScreen(
 
                         Text(
                             text =
-                                "Student Email",
+                                "Institutional Email",
 
                             modifier =
                                 Modifier.fillMaxWidth(),
@@ -942,7 +942,7 @@ fun LoginScreen(
 
                                 Text(
                                     text =
-                                        "Enter your student email",
+                                        "Enter your institutional email",
 
                                     fontSize =
                                         14.sp
@@ -1404,7 +1404,7 @@ fun LoginScreen(
 
 
 // ============================================================
-// STUDENT DASHBOARD
+// VOTER DASHBOARD
 // ============================================================
 
 @Composable
@@ -1483,7 +1483,7 @@ fun StudentDashboardScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("GZU Voting", fontSize = 18.sp, fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface)
-                        Text("Student Election Portal", fontSize = 12.sp,
+                        Text("Institutional Election Portal", fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = onLogout) {
@@ -1548,7 +1548,7 @@ fun StudentDashboardScreen(
                 item {
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "GZU Student Voting System • Blockchain-secured",
+                        "GZU Institutional Voting System • Blockchain-secured",
                         modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                         textAlign = TextAlign.Center,
                         fontSize = 12.sp,
@@ -2572,7 +2572,7 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
     var faculty by remember { mutableStateOf("") }
     var department by remember { mutableStateOf("") }
     var programme by remember { mutableStateOf("") }
-    var year by remember { mutableStateOf("1") }
+    var year by remember { mutableStateOf("") }
     var manifesto by remember { mutableStateOf("") }
     var experience by remember { mutableStateOf("") }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
@@ -2600,10 +2600,10 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
             }
             item { OutlinedTextField(position, { position = it }, label = { Text("Position (e.g. President)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { Text("Your name is retrieved automatically from the verified institutional ID; it cannot be entered or edited here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            item { OutlinedTextField(faculty, { faculty = it }, label = { Text("Faculty") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            item { OutlinedTextField(department, { department = it }, label = { Text("Department") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            item { OutlinedTextField(programme, { programme = it }, label = { Text("Programme") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            item { OutlinedTextField(year, { year = it }, label = { Text("Year of study") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) }
+            item { OutlinedTextField(faculty, { faculty = it }, label = { Text("Faculty / Division") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+            item { OutlinedTextField(department, { department = it }, label = { Text("Department / Unit") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+            item { OutlinedTextField(programme, { programme = it }, label = { Text("Programme / Role") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+            item { OutlinedTextField(year, { year = it }, label = { Text("Year of study / Service years (enter N/A if not applicable)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(manifesto, { manifesto = it }, label = { Text("Manifesto") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
             item { OutlinedTextField(experience, { experience = it }, label = { Text("Experience (optional)") }, modifier = Modifier.fillMaxWidth(), minLines = 2) }
             item {
@@ -2613,7 +2613,7 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
                 photoUri?.let { Text("Selected image: ${it.lastPathSegment ?: "photo"}", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             item {
-                Button(enabled = !loading && selectedElection != null && fullName.isNotBlank() && faculty.isNotBlank() && department.isNotBlank() && programme.isNotBlank() && manifesto.isNotBlank() && photoUri != null,
+                Button(enabled = !loading && selectedElection != null && faculty.isNotBlank() && department.isNotBlank() && programme.isNotBlank() && manifesto.isNotBlank() && photoUri != null,
                     onClick = {
                         scope.launch {
                             loading = true; message = ""

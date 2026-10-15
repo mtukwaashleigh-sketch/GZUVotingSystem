@@ -1880,8 +1880,8 @@ def admin_dashboard(
                 </h2>
 
                 <p>
-                    Monitor and manage the GZU student
-                    voting system.
+                    Monitor and manage the GZU institutional
+                    election system.
                 </p>
 
             </div>
@@ -2003,8 +2003,7 @@ def admin_dashboard(
                         </h3>
 
                         <p>
-                            Create and manage eligible
-                            student voters.
+                            Create and manage eligible institutional voters.
                         </p>
 
                         <a
@@ -2028,8 +2027,7 @@ def admin_dashboard(
                         </h3>
 
                         <p>
-                            Create, start and manage
-                            student elections.
+                            Create, start and manage institutional elections.
                         </p>
 
                         <a
@@ -2194,7 +2192,7 @@ def voter_management(
                     <div class="action-buttons">
                         <a class="button" href="/admin/voters/{voter.id}/edit">Edit</a>
                         <form method="post" action="/admin/voters/{voter.id}/delete"
-                              onsubmit="return confirm('Delete this student account? Their voting records will also be removed.');">
+                              onsubmit="return confirm('Delete this voter account? Their voting records will also be removed.');">
                             {csrf_input(request)}
                             <button type="submit" class="button button-danger">Delete</button>
                         </form>
@@ -2215,7 +2213,7 @@ def voter_management(
                 </h2>
 
                 <p>
-                    Manage verified students and employees who can participate
+                    Manage verified students and employees eligible to participate
                     in elections.
                 </p>
 
@@ -2258,7 +2256,8 @@ def voter_management(
                             <tr>
 
                                 <th>ID</th>
-                                <th>Student ID</th>
+                                <th>Institutional ID</th>
+                                <th>Full Name</th>
                                 <th>Email</th>
                                 <th>Actions</th>
 
@@ -2275,7 +2274,7 @@ def voter_management(
                                 else
                                 '''
                                 <tr>
-                                    <td colspan="4">
+                                    <td colspan="5">
                                         <div class="empty-state">
                                             <div class="empty-icon">♙</div>
                                             No voters available.
@@ -2335,7 +2334,7 @@ def create_voter_page(
             </h2>
 
             <p>
-                Add a verified student or employee to the election system.
+                Add a verified student or employee to the institutional election system.
             </p>
 
         </div>
@@ -2361,11 +2360,11 @@ def create_voter_page(
             {csrf_input(request)}
             <label>Institutional ID type</label>
             <select name="identity_type" required>
-                <option value="student">Student registration number</option>
+                <option value="student">Student ID / registration number</option>
                 <option value="employee">Employee EC number</option>
             </select>
 
-            <label>Registration number / EC number</label>
+            <label>Institutional ID / registration number</label>
             <input type="text" name="student_id" placeholder="e.g. M250000 or employee EC number" required>
 
             <label>Full name (must match the official roster)</label>
@@ -2379,7 +2378,7 @@ def create_voter_page(
             <input
                 type="email"
                 name="email"
-                placeholder="student@example.com"
+                placeholder="name@example.com"
                 required
             >
 
@@ -2721,7 +2720,7 @@ def election_management(
                 </h2>
 
                 <p>
-                    Create and manage GZU student elections.
+                    Create and manage GZU institutional elections.
                 </p>
 
             </div>
@@ -2871,7 +2870,7 @@ def create_election_page(
             </h2>
 
             <p>
-                Create a new student election.
+                Create a new institutional election.
             </p>
 
         </div>
@@ -4702,7 +4701,7 @@ def admin_nominations(
                       <h3 style="margin:0 0 8px;">{safe(item.full_name)} — {safe(item.position)}</h3>
                       <p><strong>Status:</strong> {status_label} &nbsp; <strong>Nomination ID:</strong> {item.id}</p>
                       {withdrawal_note}
-                      <p><strong>Student ID:</strong> {safe(item.student_id)} &nbsp; <strong>Election ID:</strong> {item.election_id}</p>
+                      <p><strong>Institutional ID:</strong> {safe(item.student_id)} &nbsp; <strong>Election ID:</strong> {item.election_id}</p>
                       <p><strong>Faculty:</strong> {safe(item.faculty)} &nbsp; <strong>Department:</strong> {safe(item.department)}</p>
                       <p><strong>Programme:</strong> {safe(item.programme)} &nbsp; <strong>Year:</strong> {safe(item.year_of_study)}</p>
                       <p><strong>Experience:</strong><br>{safe(item.experience) or 'Not provided'}</p>
@@ -4718,7 +4717,7 @@ def admin_nominations(
         <div class="page-heading nominations-page-heading">
           <div>
             <h1>Candidate Nominations</h1>
-            <p>Review student nomination details and candidate photos.</p>
+            <p>Review nominee details and candidate photos.</p>
           </div>
         </div>
         <div class="card" style="margin-bottom:20px;padding:24px 28px;">
@@ -4941,7 +4940,7 @@ def admin_review_nomination_page(
             message = "Nomination rejected."
         else:
             item.status = "corrections_requested"
-            message = "Corrections requested from the student."
+            message = "Corrections requested from the nominee."
 
         item.admin_feedback = feedback.strip() or None
         from datetime import datetime, timezone
@@ -4977,7 +4976,7 @@ def delete_voter(
         )
 
         if not voter:
-            set_flash(request, "Student account was not found.")
+            set_flash(request, "Voter account was not found.")
             return RedirectResponse("/admin/voters", status_code=303)
 
         existing_record = (
@@ -4991,7 +4990,7 @@ def delete_voter(
         if existing_record:
             set_flash(
                 request,
-                "This student has voting history. "
+                "This voter has voting history. "
                 "The account cannot be deleted because historical "
                 "voting records must be preserved."
             )
@@ -5001,7 +5000,7 @@ def delete_voter(
         db.delete(voter)
         db.commit()
 
-        set_flash(request, f"Student account {student_id} was deleted.")
+        set_flash(request, f"Voter account {student_id} was deleted.")
         return RedirectResponse("/admin/voters", status_code=303)
 
     except Exception:
@@ -5230,16 +5229,16 @@ def edit_voter_page(
         if not voter:
             raise HTTPException(
                 status_code=404,
-                detail="Student not found"
+                detail="Voter not found"
             )
 
         content = f"""
         <div class="card">
             <div class="card-body">
-                <h2>Edit Student Details</h2>
+                <h2>Edit Voter Details</h2>
                 <form method="post" action="/admin/voters/{voter.id}/edit">
                     {csrf_input(request)}
-                    <label>Student ID</label>
+                    <label>Institutional ID</label>
                     <input name="student_id" value="{safe(voter.student_id)}" required>
                     <label>Email</label>
                     <input type="email" name="email" value="{safe(voter.email)}" required>
@@ -5254,7 +5253,7 @@ def edit_voter_page(
 
         return HTMLResponse(
             page_template(
-                "Edit Student",
+                "Edit Voter",
                 content,
                 get_flash(request),
                 "voters"
@@ -5285,7 +5284,7 @@ def edit_voter(
         if not voter:
             raise HTTPException(
                 status_code=404,
-                detail="Student not found"
+                detail="Voter not found"
             )
 
         student_id = student_id.strip()
@@ -5294,7 +5293,7 @@ def edit_voter(
         if not student_id or not email:
             set_flash(
                 request,
-                "Student ID and email are required."
+                "Institutional ID and email are required."
             )
             return RedirectResponse(
                 f"/admin/voters/{voter_id}/edit",
@@ -5316,7 +5315,7 @@ def edit_voter(
         if duplicate:
             set_flash(
                 request,
-                "Student ID and email must be unique."
+                "Institutional ID and email must be unique."
             )
             return RedirectResponse(
                 f"/admin/voters/{voter_id}/edit",
@@ -5328,7 +5327,7 @@ def edit_voter(
 
         db.commit()
 
-        set_flash(request, "Student details updated successfully.")
+        set_flash(request, "Voter details updated successfully.")
         return RedirectResponse("/admin/voters", status_code=303)
 
     except Exception:

@@ -421,8 +421,8 @@ def get_elections(
     db: Session = Depends(get_db)
 ):
 
-    # Student-facing list excludes cancelled and archived elections. Closed
-    # elections remain available so students can view final results.
+    # Voter-facing list excludes cancelled and archived elections. Closed
+    # elections remain available so eligible voters can view final results.
     elections = (
         db.query(Election)
         .filter(Election.is_deleted == False, Election.status != "cancelled")
@@ -576,7 +576,7 @@ async def submit_candidate_nomination(
 @app.get("/students/{student_id}/nominations")
 def get_student_nominations(student_id: str, db: Session = Depends(get_db)):
     if not db.query(Voter).filter(Voter.student_id == student_id).first():
-        raise HTTPException(status_code=404, detail="Student account not found.")
+        raise HTTPException(status_code=404, detail="Voter account not found.")
     items = db.query(CandidateNomination).filter(CandidateNomination.student_id == student_id).order_by(CandidateNomination.id.desc()).all()
     return [_nomination_payload(item, db) for item in items]
 
@@ -793,7 +793,7 @@ def cast_vote(
 
         raise HTTPException(
             status_code=404,
-            detail="Student not found"
+            detail="Voter not found"
         )
 
     # --------------------------------------------------------
@@ -1066,7 +1066,7 @@ def get_election_results(
         raise HTTPException(status_code=404, detail="Election not found")
     blockchain_id, _chain_status = _verify_blockchain_election_mapping(election)
 
-    # Students can view live results while voting is ongoing and final results
+    # Eligible voters can view live results while voting is ongoing and final results
     # after closure. Upcoming, cancelled, and archived elections do not expose results.
     if election.status not in ("ongoing", "closed"):
         raise HTTPException(

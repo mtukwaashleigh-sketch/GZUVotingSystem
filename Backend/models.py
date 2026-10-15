@@ -33,7 +33,7 @@ class Voter(Base):
 
 
 class InstitutionalIdentity(Base):
-    """Authoritative student/staff identity roster supplied by GZU HR/Registry."""
+    """Authoritative student and employee identity roster supplied by GZU HR/Registry."""
     __tablename__ = "institutional_identities"
     id = Column(Integer, primary_key=True, index=True)
     identifier = Column(String, nullable=False, unique=True, index=True)
@@ -144,7 +144,7 @@ class VotingRecord(Base):
         nullable=False
     )
 
-    # A student can vote once for each position,
+    # An eligible voter can vote once for each position,
     # but cannot vote twice for the same position.
     __table_args__ = (
         UniqueConstraint(
