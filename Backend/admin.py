@@ -9,6 +9,7 @@ from models import (
     Candidate,
     CandidateNomination,
     CandidateProfile,
+    InstitutionalIdentity,
     VotingRecord,
     Vote
 )
@@ -1726,7 +1727,7 @@ def page_template(
                 </h1>
 
                 <p class="topbar-subtitle">
-                    Great Zimbabwe University Student Voting System
+                    Great Zimbabwe University GZU Election Management System
                 </p>
 
             </div>
@@ -2111,12 +2112,12 @@ def admin_dashboard(
 
                 <p>
                     <strong>Platform:</strong>
-                    GZU Student Voting System
+                    GZU GZU Election Management System
                 </p>
 
                 <p>
                     <strong>Voting technology:</strong>
-                    Blockchain-based voting through Sepolia blockchain. 
+                    Blockchain-based voting through Sepolia blockchain.
                 </p>
 
                 <p>
@@ -2126,7 +2127,7 @@ def admin_dashboard(
 
                 <p>
                     <strong>Database:</strong>
-                    PostgreSQL through SQLAlchemy 
+                    PostgreSQL through SQLAlchemy
                 </p>
 
             </div>
@@ -2184,14 +2185,11 @@ def voter_management(
                 </td>
 
                 <td>
-                    <strong>
-                        {safe(voter.student_id)}
-                    </strong>
+                    <strong>{safe(voter.student_id)}</strong>
+                    <div class="muted">{safe(voter.identity_type or "student")}</div>
                 </td>
-
-                <td>
-                    {safe(voter.email)}
-                </td>
+                <td>{safe(voter.full_name or "Name not linked")}</td>
+                <td>{safe(voter.email)}</td>
                 <td>
                     <div class="action-buttons">
                         <a class="button" href="/admin/voters/{voter.id}/edit">Edit</a>
@@ -2217,7 +2215,7 @@ def voter_management(
                 </h2>
 
                 <p>
-                    Manage students who can participate
+                    Manage verified students and employees who can participate
                     in elections.
                 </p>
 
@@ -2337,7 +2335,7 @@ def create_voter_page(
             </h2>
 
             <p>
-                Add a student to the voting system.
+                Add a verified student or employee to the election system.
             </p>
 
         </div>
@@ -2352,7 +2350,7 @@ def create_voter_page(
         </h2>
 
         <p class="form-description">
-            Enter the student's details below.
+            Enter the institutional identity details below. The identifier and name must exist in the official Registry/HR roster.
         </p>
 
 
@@ -2361,16 +2359,17 @@ def create_voter_page(
             action="/admin/voters/create"
         >
             {csrf_input(request)}
-            <label>
-                Student ID
-            </label>
+            <label>Institutional ID type</label>
+            <select name="identity_type" required>
+                <option value="student">Student registration number</option>
+                <option value="employee">Employee EC number</option>
+            </select>
 
-            <input
-                type="text"
-                name="student_id"
-                placeholder="e.g. M250000"
-                required
-            >
+            <label>Registration number / EC number</label>
+            <input type="text" name="student_id" placeholder="e.g. M250000 or employee EC number" required>
+
+            <label>Full name (must match the official roster)</label>
+            <input type="text" name="full_name" placeholder="Full legal name" required>
 
 
             <label>
@@ -2442,6 +2441,8 @@ def create_voter(
     request: Request,
 
     student_id: str = Form(...),
+    full_name: str = Form(...),
+    identity_type: str = Form("student"),
 
     email: str = Form(...),
 
@@ -2452,6 +2453,22 @@ def create_voter(
     db = get_db()
 
     try:
+        student_id = student_id.strip().upper()
+        identity = db.query(InstitutionalIdentity).filter(
+            InstitutionalIdentity.identifier == student_id
+        ).first()
+        if not identity:
+            set_flash(request, "Identity not verified: this ID is not in the official GZU Registry/HR roster. Import the authoritative roster before creating accounts.")
+            return RedirectResponse("/admin/voters/create", status_code=303)
+        if identity.full_name.strip().casefold() != full_name.strip().casefold():
+            set_flash(request, "Identity not verified: the name does not match the official Registry/HR record.")
+            return RedirectResponse("/admin/voters/create", status_code=303)
+        if identity.identity_type != identity_type:
+            set_flash(request, "Identity type does not match the official Registry/HR record.")
+            return RedirectResponse("/admin/voters/create", status_code=303)
+        if not identity.institutional_email or identity.institutional_email.strip().casefold() != email.strip().casefold():
+            set_flash(request, "Email verification failed: enter the institutional email held by Registry/HR. Accounts without an official contact address cannot be created.")
+            return RedirectResponse("/admin/voters/create", status_code=303)
 
         existing_student = (
             db.query(Voter)
@@ -2514,9 +2531,11 @@ def create_voter(
         ).decode("utf-8")
 
         voter = Voter(
-            student_id=student_id,
+            student_id=student_id.strip(),
             email=email,
-            password=hashed_password
+            password=hashed_password,
+            full_name=identity.full_name,
+            identity_type=identity.identity_type
         )
 
         db.add(voter)
@@ -3309,12 +3328,7 @@ def manage_election(
                     {action_buttons}
 
 
-                    <a
-                        class="button button-secondary"
-                        href="/admin/candidates/create?election_id={election_id}"
-                    >
-                        + Add Candidate
-                    </a>
+
 
                 </div>
 
@@ -3469,7 +3483,7 @@ def start_election(
             )
 
 
-        
+
         if election.blockchain_election_id is None:
             raise ValueError(
                 "This election has no mapped blockchain ID."
@@ -3496,7 +3510,7 @@ def start_election(
             start_election_on_blockchain(
                 blockchain_id
             )
-            
+
 
         election.status = "ongoing"
 
@@ -3587,7 +3601,7 @@ def end_election(
                 status_code=303
             )
 
-        
+
         if election.blockchain_election_id is None:
             raise ValueError(
                 "This election has no mapped blockchain ID."
@@ -3612,7 +3626,7 @@ def end_election(
                 blockchain_id
             )
 
-    
+
         election.status = "closed"
 
         db.commit()
@@ -3669,7 +3683,7 @@ def cancel_election(request: Request, election_id: int, admin: str = Depends(req
             set_flash(request, f"Election '{election.title}' is already {election.status}.")
             return RedirectResponse(f"/admin/elections/{election_id}", status_code=303)
 
-        
+
         # Cancellation is recorded separately on-chain and in SQLite.
         if election.blockchain_election_id is None:
             raise ValueError(
@@ -3788,18 +3802,11 @@ def candidate_management(
                 </h2>
 
                 <p>
-                    Manage candidates for student elections.
+                    Review candidates submitted through the nominations workflow.
                 </p>
 
             </div>
 
-
-            <a
-                class="button"
-                href="/admin/candidates/create"
-            >
-                + Add Candidate
-            </a>
 
         </div>
 
@@ -3915,6 +3922,9 @@ def create_candidate_page(
     election_id: int = None
 
 ):
+    return RedirectResponse("/admin/nominations", status_code=303)
+
+
 
     db = get_db()
 
@@ -3960,7 +3970,7 @@ def create_candidate_page(
                 </h2>
 
                 <p>
-                    Add a candidate to an election.
+                    Candidates are registered from approved nominations.
                 </p>
 
             </div>
@@ -4089,6 +4099,9 @@ def create_candidate(
     name: str = Form(...),
     position: str = Form(...)
 ):
+    return RedirectResponse("/admin/nominations", status_code=303)
+
+
     db = get_db()
 
     try:
@@ -4325,7 +4338,7 @@ def admin_results(
             get_candidate_vote_count
         )
 
-        
+
         for election in elections:
 
             if election.blockchain_election_id is None:
@@ -4470,7 +4483,7 @@ def admin_results(
                         votes = 0
 
                     else:
-                        
+
                         votes = (
                             get_candidate_vote_count(
                                 blockchain_id,
@@ -4781,7 +4794,7 @@ def admin_review_nomination_page(
             set_flash(request, "Only pending nominations can be reviewed.")
             return RedirectResponse("/admin/nominations?status=all", status_code=303)
 
-        
+
         if decision == "approve":
             election = (
                 db.query(Election)

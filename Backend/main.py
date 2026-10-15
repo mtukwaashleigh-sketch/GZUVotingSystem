@@ -38,7 +38,8 @@ from models import (
     VotingRecord,
     Vote,
     CandidateNomination,
-    CandidateProfile
+    CandidateProfile,
+    InstitutionalIdentity
 )
 
 from admin import router as admin_router
@@ -88,7 +89,7 @@ except Exception as migration_error:
 # ============================================================
 
 app = FastAPI(
-    title="GZU Student Voting System API"
+    title="GZU Election Management System API"
 )
 
 UPLOAD_DIR = BASE_DIR / "uploads" / "candidate_photos"
@@ -405,6 +406,8 @@ def login(
     return {
         "message": "Login successful",
         "student_id": voter.student_id,
+        "full_name": voter.full_name,
+        "identity_type": voter.identity_type,
         "email": voter.email
     }
 
@@ -515,11 +518,11 @@ def _nomination_payload(item, db=None):
 @app.post("/nominations")
 async def submit_candidate_nomination(
     student_id: str = Form(...), election_id: int = Form(...), position: str = Form(...),
-    full_name: str = Form(...), faculty: str = Form(...), department: str = Form(...),
+    full_name: str = Form(""), faculty: str = Form(...), department: str = Form(...),
     programme: str = Form(...), year_of_study: str = Form(...), manifesto: str = Form(...),
     experience: str = Form(""), photo: UploadFile = File(...), db: Session = Depends(get_db),
 ):
-    required = [student_id, position, full_name, faculty, department, programme, year_of_study, manifesto]
+    required = [student_id, position, faculty, department, programme, year_of_study, manifesto]
     if any(not value.strip() for value in required):
         raise HTTPException(status_code=400, detail="Please complete all required nomination fields.")
     election = db.query(Election).filter(Election.id == election_id).first()
@@ -527,8 +530,16 @@ async def submit_candidate_nomination(
         raise HTTPException(status_code=404, detail="Election not found.")
     if election.status != "upcoming":
         raise HTTPException(status_code=400, detail="Nominations can only be submitted for an upcoming election.")
-    if not db.query(Voter).filter(Voter.student_id == student_id).first():
-        raise HTTPException(status_code=404, detail="Student account not found.")
+    student_id = student_id.strip().upper()
+    nominator = db.query(Voter).filter(Voter.student_id == student_id).first()
+    if not nominator:
+        raise HTTPException(status_code=404, detail="Institutional account not found.")
+    linked_name = (nominator.full_name or "").strip()
+    if not linked_name:
+        registry = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == student_id).first()
+        linked_name = registry.full_name if registry else ""
+    if not linked_name:
+        raise HTTPException(status_code=409, detail="Your institutional ID has no verified name mapping. Contact Registry/HR.")
     duplicate = db.query(CandidateNomination).filter(
         CandidateNomination.student_id == student_id, CandidateNomination.election_id == election_id,
         CandidateNomination.position == position, CandidateNomination.status.in_(["pending", "approved"])
@@ -553,7 +564,7 @@ async def submit_candidate_nomination(
     (UPLOAD_DIR / filename).write_bytes(data)
     item = CandidateNomination(
         student_id=student_id.strip(), election_id=election_id, position=position.strip(),
-        full_name=full_name.strip(), faculty=faculty.strip(), department=department.strip(),
+        full_name=linked_name, faculty=faculty.strip(), department=department.strip(),
         programme=programme.strip(), year_of_study=year_of_study.strip(), manifesto=manifesto.strip(),
         experience=experience.strip(), photo_path=filename, status="pending",
         created_at=datetime.now(timezone.utc).isoformat()
@@ -738,6 +749,25 @@ def admin_review_nomination(
 
 # CAST VOTE
 # ============================================================
+
+@app.get("/elections/{election_id}/voter-status")
+def get_voter_status(election_id: int, student_id: str, db: Session = Depends(get_db)):
+    """Fast preflight check so a voter who has already cast a ballot is stopped before candidate selection."""
+    voter = db.query(Voter).filter(Voter.student_id == student_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Voter identity was not found.")
+    election = db.query(Election).filter(Election.id == election_id, Election.is_deleted == False).first()
+    if not election or election.status == "cancelled":
+        raise HTTPException(status_code=404, detail="Election not found or unavailable.")
+    voted_positions = [
+        row.position for row in db.query(VotingRecord).filter(
+            VotingRecord.student_id == student_id,
+            VotingRecord.election_id == election_id
+        ).all()
+    ]
+    return {"student_id": student_id, "election_id": election_id,
+            "has_voted": bool(voted_positions), "voted_positions": voted_positions}
+
 
 @app.post("/vote")
 def cast_vote(

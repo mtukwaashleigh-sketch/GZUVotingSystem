@@ -28,6 +28,18 @@ class Voter(Base):
     password = Column(
         String
     )
+    full_name = Column(String, nullable=True)
+    identity_type = Column(String, nullable=False, default="student")
+
+
+class InstitutionalIdentity(Base):
+    """Authoritative student/staff identity roster supplied by GZU HR/Registry."""
+    __tablename__ = "institutional_identities"
+    id = Column(Integer, primary_key=True, index=True)
+    identifier = Column(String, nullable=False, unique=True, index=True)
+    full_name = Column(String, nullable=False)
+    identity_type = Column(String, nullable=False)  # student or employee
+    institutional_email = Column(String, nullable=True)
 
 
 class Election(Base):

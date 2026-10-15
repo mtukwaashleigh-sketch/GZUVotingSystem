@@ -48,6 +48,12 @@ interface VotingApi {
         @Path("election_id") electionId: Int
     ): Response<List<Candidate>>
 
+    @GET("elections/{election_id}/voter-status")
+    suspend fun getVoterStatus(
+        @Path("election_id") electionId: Int,
+        @Query("student_id") studentId: String
+    ): Response<VoterStatus>
+
     @POST("vote")
     suspend fun castVote(
         @Query("student_id") studentId: String,

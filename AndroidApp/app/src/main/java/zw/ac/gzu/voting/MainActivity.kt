@@ -2102,984 +2102,193 @@ fun VotingScreen(
     onBack: () -> Unit,
     onViewResults: () -> Unit
 ) {
+    var candidates by remember { mutableStateOf<List<Candidate>>(emptyList()) }
+    var selectedByPosition by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var message by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(true) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var showConfirmation by remember { mutableStateOf(false) }
+    var hasVoted by remember { mutableStateOf(false) }
+    var profileCandidate by remember { mutableStateOf<Candidate?>(null) }
+    val scope = rememberCoroutineScope()
 
-    var candidates by remember {
-        mutableStateOf<List<Candidate>>(
-            emptyList()
-        )
-    }
-
-    var selectedCandidateId by remember {
-        mutableStateOf<Int?>(null)
-    }
-
-    var message by remember {
-        mutableStateOf("")
-    }
-
-    var isLoading by remember {
-        mutableStateOf(true)
-    }
-
-    var isSubmitting by remember {
-        mutableStateOf(false)
-    }
-
-    var showConfirmation by remember {
-        mutableStateOf(false)
-    }
-
-    var voteSubmitted by remember {
-        mutableStateOf(false)
-    }
-
-    val scope =
-        rememberCoroutineScope()
-
-
-    LaunchedEffect(electionId) {
-
+    LaunchedEffect(electionId, studentId) {
         try {
-
-            val response =
-                RetrofitClient
-                    .api
-                    .getCandidates(
-                        electionId
-                    )
-
-            if (response.isSuccessful) {
-
-                candidates =
-                    response.body()
-                        ?: emptyList()
-
-                if (candidates.isEmpty()) {
-
-                    message =
-                        "No candidates are available for this election."
-                }
-
+            val status = RetrofitClient.api.getVoterStatus(electionId, studentId)
+            if (status.isSuccessful && status.body()?.has_voted == true) {
+                hasVoted = true
+                message = "Our records show that you have already voted in this election. Candidate selection is disabled."
+            } else if (!status.isSuccessful) {
+                message = status.errorBody()?.string()?.take(240) ?: "Unable to verify your voting status."
             } else {
-
-                message =
-                    "Failed to load candidates."
+                val response = RetrofitClient.api.getCandidates(electionId)
+                if (response.isSuccessful) {
+                    candidates = response.body().orEmpty()
+                    if (candidates.isEmpty()) message = "No candidates are available for this election."
+                } else message = "Failed to load candidates."
             }
-
-        } catch (
-            e: Exception
-        ) {
-
-            message =
-                "Unable to connect to the voting server."
-
+        } catch (e: Exception) {
+            message = "Unable to connect to the voting server. Please try again."
         } finally {
-
-            isLoading =
-                false
+            isLoading = false
         }
     }
 
-
-    // ========================================================
-    // CONFIRMATION
-    // ========================================================
+    profileCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { profileCandidate = null },
+            title = { Text(candidate.name, fontWeight = FontWeight.Bold) },
+            text = {
+                LazyColumn(modifier = Modifier.height(430.dp)) {
+                    item {
+                        if (!candidate.photo_url.isNullOrBlank()) {
+                            AsyncImage(
+                                model = RetrofitClient.baseUrlFor(candidate.photo_url),
+                                contentDescription = "Portrait of ${candidate.name}",
+                                modifier = Modifier.fillMaxWidth().height(250.dp).clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Position: ${candidate.position}", fontWeight = FontWeight.SemiBold)
+                        candidate.faculty?.takeIf { it.isNotBlank() }?.let { Text("Faculty: $it") }
+                        candidate.department?.takeIf { it.isNotBlank() }?.let { Text("Department: $it") }
+                        candidate.programme?.takeIf { it.isNotBlank() }?.let { Text("Programme: $it") }
+                        candidate.year_of_study?.takeIf { it.isNotBlank() }?.let { Text("Year: $it") }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Manifesto", fontWeight = FontWeight.Bold)
+                        Text(candidate.manifesto?.takeIf { it.isNotBlank() } ?: "No manifesto supplied.")
+                        Spacer(Modifier.height(8.dp))
+                        Text("Experience", fontWeight = FontWeight.Bold)
+                        Text(candidate.experience?.takeIf { it.isNotBlank() } ?: "No experience information supplied.")
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { profileCandidate = null }) { Text("Close") } }
+        )
+    }
 
     if (showConfirmation) {
-
-        val selectedCandidate =
-            candidates.firstOrNull {
-                it.id ==
-                        selectedCandidateId
-            }
-
-
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        MaterialTheme
-                            .colorScheme
-                            .background
-                    )
-                    .windowInsetsPadding(
-                        WindowInsets.statusBars
-                    )
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars
-                    )
-                    .padding(20.dp)
-        ) {
-
-            AppHeader(
-                title =
-                    "Confirm Your Vote",
-
-                subtitle =
-                    "Review your selection carefully.",
-
-                onBack = {
-                    showConfirmation =
-                        false
+        AlertDialog(
+            onDismissRequest = { if (!isSubmitting) showConfirmation = false },
+            title = { Text("Confirm your ballot") },
+            text = {
+                Column {
+                    Text("Review your selections. Each position is submitted as one vote.")
+                    Spacer(Modifier.height(10.dp))
+                    selectedByPosition.forEach { (position, candidateId) ->
+                        val candidate = candidates.firstOrNull { it.id == candidateId }
+                        Text("$position: ${candidate?.name ?: "Candidate"}", fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Submitted votes cannot be changed.")
+                    if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.error)
                 }
-            )
-
-
-            Card(
-                modifier =
-                    Modifier.fillMaxWidth(),
-
-                shape =
-                    RoundedCornerShape(17.dp),
-
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            MaterialTheme
-                                .colorScheme
-                                .surface
-                    ),
-
-                elevation =
-                    CardDefaults.cardElevation(
-                        defaultElevation =
-                            2.dp
-                    )
-            ) {
-
-                Column(
-                    modifier =
-                        Modifier.padding(22.dp)
-                ) {
-
-                    Text(
-                        text =
-                            "Your Selection",
-
-                        fontSize =
-                            20.sp,
-
-                        fontWeight =
-                            FontWeight.Bold,
-
-                        color =
-                            MaterialTheme
-                                .colorScheme
-                                .onSurface
-                    )
-
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(18.dp)
-                    )
-
-
-                    Surface(
-                        modifier =
-                            Modifier.fillMaxWidth(),
-
-                        shape =
-                            RoundedCornerShape(13.dp),
-
-                        color =
-                            if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                                Color(0xFF193426)
-                            } else {
-                                GzuVeryLightGreen
-                            }
-                    ) {
-
-                        Column(
-                            modifier =
-                                Modifier.padding(17.dp)
-                        ) {
-
-                            Text(
-                                text =
-                                    selectedCandidate
-                                        ?.position
-                                        ?: "Candidate",
-
-                                fontSize =
-                                    13.sp,
-
-                                color =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .onSurfaceVariant,
-
-                                fontWeight =
-                                    FontWeight.SemiBold
-                            )
-
-
-                            Spacer(
-                                modifier =
-                                    Modifier.height(6.dp)
-                            )
-
-
-                            Text(
-                                text =
-                                    selectedCandidate
-                                        ?.name
-                                        ?: "",
-
-                                fontSize =
-                                    21.sp,
-
-                                fontWeight =
-                                    FontWeight.Bold,
-
-                                color =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .primary
-                            )
-                        }
-                    }
-
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(22.dp)
-                    )
-
-
-                    Surface(
-                        modifier =
-                            Modifier.fillMaxWidth(),
-
-                        shape =
-                            RoundedCornerShape(11.dp),
-
-                        color =
-                            if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                                DarkWarningBackground
-                            } else {
-                                WarningBackground
-                            }
-                    ) {
-
-                        Text(
-                            text =
-                                "Please make sure your selection is correct. Once submitted, your vote cannot be changed.",
-
-                            modifier =
-                                Modifier.padding(14.dp),
-
-                            fontSize =
-                                14.sp,
-
-                            color =
-                                if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                                    Color(0xFFFFD166)
+            },
+            confirmButton = {
+                Button(
+                    enabled = !isSubmitting,
+                    onClick = {
+                        isSubmitting = true
+                        message = ""
+                        scope.launch {
+                            try {
+                                // Recheck immediately before sending, so stale screens cannot submit a second ballot.
+                                val status = RetrofitClient.api.getVoterStatus(electionId, studentId)
+                                if (!status.isSuccessful || status.body()?.has_voted == true) {
+                                    hasVoted = true
+                                    message = "You have already voted in this election, or your voting status could not be verified. No new votes were submitted."
                                 } else {
-                                    WarningText
-                                },
-
-                            lineHeight =
-                                20.sp
-                        )
-                    }
-
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(24.dp)
-                    )
-
-
-                    Button(
-                        onClick = {
-
-                            val candidateId =
-                                selectedCandidateId
-
-                            if (
-                                candidateId != null
-                            ) {
-
-                                isSubmitting =
-                                    true
-
-                                message =
-                                    ""
-
-                                scope.launch {
-
-                                    try {
-
-                                        val response =
-                                            RetrofitClient
-                                                .api
-                                                .castVote(
-                                                    studentId =
-                                                        studentId,
-
-                                                    electionId =
-                                                        electionId,
-
-                                                    candidateId =
-                                                        candidateId
-                                                )
-
-
-                                        if (
-                                            response
-                                                .isSuccessful
-                                        ) {
-
-                                            voteSubmitted =
-                                                true
-
-                                            showConfirmation =
-                                                false
-
-                                            message =
-                                                "Your vote has been recorded successfully."
-
-                                        } else {
-
-                                            val errorBody =
-                                                response
-                                                    .errorBody()
-                                                    ?.string()
-                                                    ?: ""
-
-                                            message =
-                                                when {
-
-                                                    errorBody.contains(
-                                                        "not currently ongoing",
-                                                        ignoreCase =
-                                                            true
-                                                    ) ||
-                                                            errorBody.contains(
-                                                                "ended",
-                                                                ignoreCase =
-                                                                    true
-                                                            ) -> {
-
-                                                        "This election has ended. Voting is closed."
-                                                    }
-
-                                                    errorBody.contains(
-                                                        "already voted",
-                                                        ignoreCase =
-                                                            true
-                                                    ) -> {
-
-                                                        "You have already voted for this position."
-                                                    }
-
-                                                    else -> {
-
-                                                        "Unable to submit your vote."
-                                                    }
-                                                }
+                                    var failed = false
+                                    for ((_, candidateId) in selectedByPosition) {
+                                        val response = RetrofitClient.api.castVote(studentId, electionId, candidateId)
+                                        if (!response.isSuccessful) {
+                                            message = response.errorBody()?.string()?.take(240)
+                                                ?: "A vote could not be submitted. Contact the election administrator before retrying."
+                                            failed = true
+                                            break
                                         }
-
-                                    } catch (
-                                        e: Exception
-                                    ) {
-
-                                        message =
-                                            "Unable to connect to the voting server."
-
-                                    } finally {
-
-                                        isSubmitting =
-                                            false
+                                    }
+                                    if (!failed) {
+                                        message = "Your ballot has been submitted successfully."
+                                        hasVoted = true
+                                        showConfirmation = false
                                     }
                                 }
+                            } catch (e: Exception) {
+                                message = "The server connection failed. Please verify your ballot status before retrying."
+                            } finally {
+                                isSubmitting = false
                             }
-                        },
-
-                        enabled =
-                            !isSubmitting,
-
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
-
-                        shape =
-                            RoundedCornerShape(12.dp),
-
-                        colors =
-                            ButtonDefaults.buttonColors(
-                                containerColor =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .primary,
-
-                                contentColor =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .onPrimary
-                            )
-                    ) {
-
-                        if (isSubmitting) {
-
-                            CircularProgressIndicator(
-                                color =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .onPrimary,
-
-                                modifier =
-                                    Modifier.size(23.dp),
-
-                                strokeWidth =
-                                    2.5.dp
-                            )
-
-                        } else {
-
-                            Text(
-                                text =
-                                    "SUBMIT MY VOTE",
-
-                                fontWeight =
-                                    FontWeight.Bold,
-
-                                fontSize =
-                                    15.sp
-                            )
                         }
                     }
-
-
-                    if (message.isNotEmpty()) {
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(15.dp)
-                        )
-
-
-                        Text(
-                            text =
-                                message,
-
-                            color =
-                                MaterialTheme
-                                    .colorScheme
-                                    .error,
-
-                            fontSize =
-                                14.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        return
-    }
-
-
-    // ========================================================
-    // SUCCESS
-    // ========================================================
-
-    if (voteSubmitted) {
-
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        MaterialTheme
-                            .colorScheme
-                            .background
-                    )
-                    .windowInsetsPadding(
-                        WindowInsets.statusBars
-                    )
-                    .windowInsetsPadding(
-                        WindowInsets.navigationBars
-                    )
-                    .padding(25.dp),
-
-            horizontalAlignment =
-                Alignment.CenterHorizontally,
-
-            verticalArrangement =
-                Arrangement.Center
-        ) {
-
-            Surface(
-                modifier =
-                    Modifier.size(105.dp),
-
-                shape =
-                    CircleShape,
-
-                color =
-                    if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                        Color(0xFF193E2B)
-                    } else {
-                        GzuLightGreen
-                    }
-            ) {
-
-                Box(
-                    contentAlignment =
-                        Alignment.Center
                 ) {
-
-                    Text(
-                        text =
-                            "✓",
-
-                        fontSize =
-                            54.sp,
-
-                        fontWeight =
-                            FontWeight.Bold,
-
-                        color =
-                            MaterialTheme
-                                .colorScheme
-                                .primary
-                    )
+                    if (isSubmitting) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    else Text("Submit ballot")
                 }
+            },
+            dismissButton = {
+                TextButton(enabled = !isSubmitting, onClick = { showConfirmation = false }) { Text("Back") }
             }
-
-
-            Spacer(
-                modifier =
-                    Modifier.height(25.dp)
-            )
-
-
-            Text(
-                text =
-                    "Vote Submitted!",
-
-                fontSize =
-                    29.sp,
-
-                fontWeight =
-                    FontWeight.Bold,
-
-                color =
-                    MaterialTheme
-                        .colorScheme
-                        .onBackground
-            )
-
-
-            Spacer(
-                modifier =
-                    Modifier.height(10.dp)
-            )
-
-
-            Text(
-                text =
-                    "Your vote has been successfully recorded.",
-
-                fontSize =
-                    15.sp,
-
-                color =
-                    MaterialTheme
-                        .colorScheme
-                        .onSurfaceVariant,
-
-                textAlign =
-                    TextAlign.Center
-            )
-
-
-            Spacer(
-                modifier =
-                    Modifier.height(30.dp)
-            )
-
-
-            Button(
-                onClick =
-                    onViewResults,
-
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(54.dp),
-
-                shape =
-                    RoundedCornerShape(11.dp),
-
-                colors =
-                    ButtonDefaults.buttonColors(
-                        containerColor =
-                            MaterialTheme
-                                .colorScheme
-                                .primary,
-
-                        contentColor =
-                            MaterialTheme
-                                .colorScheme
-                                .onPrimary
-                    )
-            ) {
-
-                Text(
-                    text =
-                        "VIEW LIVE RESULTS",
-
-                    fontWeight =
-                        FontWeight.Bold,
-
-                    fontSize =
-                        14.sp
-                )
-            }
-
-
-            Spacer(
-                modifier =
-                    Modifier.height(10.dp)
-            )
-
-
-            OutlinedButton(
-                onClick =
-                    onBack,
-
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(54.dp),
-
-                shape =
-                    RoundedCornerShape(11.dp)
-            ) {
-
-                Text(
-                    text =
-                        "BACK TO ELECTIONS",
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary,
-
-                    fontWeight =
-                        FontWeight.Bold,
-
-                    fontSize =
-                        14.sp
-                )
-            }
-        }
-
-        return
+        )
     }
-
-
-    // ========================================================
-    // CANDIDATE SELECTION
-    // ========================================================
 
     Column(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .background(
-                    MaterialTheme
-                        .colorScheme
-                        .background
-                )
-                .windowInsetsPadding(
-                    WindowInsets.statusBars
-                )
-                .windowInsetsPadding(
-                    WindowInsets.navigationBars
-                )
-                .padding(
-                    horizontal = 20.dp
-                )
+        modifier = Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
-
-        Spacer(
-            modifier =
-                Modifier.height(15.dp)
-        )
-
-
         AppHeader(
-            title =
-                "Cast Your Vote",
-
-            subtitle =
-                "Select your preferred candidate.",
-
-            onBack =
-                onBack
+            title = "GZU Election Management System",
+            subtitle = "Choose one candidate for each position",
+            onBack = onBack
         )
-
-
-        Surface(
-            modifier =
-                Modifier.fillMaxWidth(),
-
-            shape =
-                RoundedCornerShape(13.dp),
-
-            color =
-                if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                    Color(0xFF193426)
-                } else {
-                    GzuLightGreen
-                }
-        ) {
-
-            Row(
-                modifier =
-                    Modifier.padding(14.dp),
-
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
-
-                Text(
-                    text =
-                        "✓",
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary,
-
-                    fontSize =
-                        21.sp,
-
-                    fontWeight =
-                        FontWeight.Bold
-                )
-
-
-                Spacer(
-                    modifier =
-                        Modifier.width(10.dp)
-                )
-
-
-                Text(
-                    text =
-                        "Your vote will be securely recorded through the voting system.",
-
-                    fontSize =
-                        13.sp,
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .onSurface,
-
-                    lineHeight =
-                        18.sp
-                )
-            }
-        }
-
-
-        Spacer(
-            modifier =
-                Modifier.height(18.dp)
-        )
-
-
+        Spacer(Modifier.height(10.dp))
         if (isLoading) {
-
-            Column(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-
-                horizontalAlignment =
-                    Alignment.CenterHorizontally,
-
-                verticalArrangement =
-                    Arrangement.Center
-            ) {
-
-                CircularProgressIndicator(
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .primary
-                )
-
-
-                Spacer(
-                    modifier =
-                        Modifier.height(12.dp)
-                )
-
-
-                Text(
-                    text =
-                        "Loading candidates...",
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .onSurfaceVariant,
-
-                    fontSize =
-                        14.sp
-                )
+            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
             }
-
+        } else if (hasVoted) {
+            Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+            Button(onClick = onViewResults, modifier = Modifier.fillMaxWidth()) { Text("View results") }
         } else {
-
-            LazyColumn(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-            ) {
-
-                items(candidates) { candidate ->
-
-                    CandidateCard(
-                        candidate =
-                            candidate,
-
-                        selected =
-                            selectedCandidateId ==
-                                    candidate.id,
-
-                        onClick = {
-
-                            selectedCandidateId =
-                                candidate.id
-
-                            message =
-                                ""
+            if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.error)
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val positions = candidates.groupBy { it.position }.toList()
+                items(positions, key = { it.first }) { (position, positionCandidates) ->
+                    Column {
+                        Text(position, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.height(6.dp))
+                        positionCandidates.forEach { candidate ->
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                            ) {
+                                CandidateCard(
+                                    candidate = candidate,
+                                    selected = selectedByPosition[position] == candidate.id,
+                                    onClick = { selectedByPosition = selectedByPosition + (position to candidate.id) }
+                                )
+                                TextButton(onClick = { profileCandidate = candidate }) { Text("View ${candidate.name}'s profile") }
+                            }
                         }
-                    )
-
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(10.dp)
-                    )
+                    }
                 }
             }
-        }
-
-
-        if (message.isNotEmpty()) {
-
-            Surface(
-                modifier =
-                    Modifier.fillMaxWidth(),
-
-                shape =
-                    RoundedCornerShape(11.dp),
-
-                color =
-                    if (MaterialTheme.colorScheme.background == GzuDarkBackground) {
-                        DarkDangerBackground
-                    } else {
-                        DangerBackground
-                    }
-            ) {
-
-                Text(
-                    text =
-                        message,
-
-                    modifier =
-                        Modifier.padding(12.dp),
-
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .error,
-
-                    fontSize =
-                        13.sp
-                )
-            }
-
-
-            Spacer(
-                modifier =
-                    Modifier.height(10.dp)
-            )
-        }
-
-
-        if (
-            selectedCandidateId != null &&
-            !isLoading
-        ) {
-
+            Spacer(Modifier.height(8.dp))
             Button(
-                onClick = {
-
-                    showConfirmation =
-                        true
-                },
-
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(55.dp),
-
-                shape =
-                    RoundedCornerShape(12.dp),
-
-                colors =
-                    ButtonDefaults.buttonColors(
-                        containerColor =
-                            MaterialTheme
-                                .colorScheme
-                                .primary,
-
-                        contentColor =
-                            MaterialTheme
-                                .colorScheme
-                                .onPrimary
-                    )
-            ) {
-
-                Text(
-                    text =
-                        "CONTINUE TO CONFIRM",
-
-                    fontWeight =
-                        FontWeight.Bold,
-
-                    fontSize =
-                        15.sp
-                )
-            }
+                onClick = { showConfirmation = true },
+                enabled = selectedByPosition.isNotEmpty() && selectedByPosition.size == candidates.map { it.position }.distinct().size,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Review and submit ballot (${selectedByPosition.size} positions)") }
         }
-
-
-        Spacer(
-            modifier =
-                Modifier.height(15.dp)
-        )
+        if (message.isNotBlank() && !isLoading && !hasVoted) {
+            Text(message, color = if (message.contains("success", true)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+        }
     }
 }
 
-
-// ============================================================
-// CANDIDATE CARD
-// ============================================================
 
 @Composable
 fun CandidateCard(
@@ -3177,14 +2386,15 @@ fun CandidateCard(
                     model = RetrofitClient.baseUrlFor(candidate.photo_url),
                     contentDescription = "Photo of ${candidate.name}",
                     modifier = Modifier
-                        .size(68.dp)
-                        .clip(CircleShape),
+                        .width(124.dp)
+                        .height(160.dp)
+                        .clip(RoundedCornerShape(12.dp)),
                     contentScale = ContentScale.Crop
                 )
             } else {
                 Surface(
-                    modifier = Modifier.size(68.dp),
-                    shape = CircleShape,
+                    modifier = Modifier.width(124.dp).height(160.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = if (selected) MaterialTheme.colorScheme.primary
                     else if (MaterialTheme.colorScheme.background == GzuDarkBackground) Color(0xFF26352E)
                     else Color(0xFFEFF3F0)
@@ -3381,7 +2591,7 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).windowInsetsPadding(WindowInsets.statusBars).windowInsetsPadding(WindowInsets.navigationBars).padding(18.dp)) {
         AppHeader("Candidate Nomination", "Submit your details for admin review", onBack)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item { Text("Student ID: $studentId", fontWeight = FontWeight.Bold) }
+            item { Text("Institutional ID: $studentId", fontWeight = FontWeight.Bold) }
             item { Text("Select election", fontWeight = FontWeight.SemiBold) }
             items(elections) { e ->
                 OutlinedButton(onClick = { selectedElection = e }, modifier = Modifier.fillMaxWidth(), border = BorderStroke(1.dp, if (selectedElection?.id == e.id) GzuGreen else MaterialTheme.colorScheme.outline)) {
@@ -3389,12 +2599,12 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
                 }
             }
             item { OutlinedTextField(position, { position = it }, label = { Text("Position (e.g. President)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            item { OutlinedTextField(fullName, { fullName = it }, label = { Text("Full name") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+            item { Text("Your name is retrieved automatically from the verified institutional ID; it cannot be entered or edited here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             item { OutlinedTextField(faculty, { faculty = it }, label = { Text("Faculty") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(department, { department = it }, label = { Text("Department") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(programme, { programme = it }, label = { Text("Programme") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(year, { year = it }, label = { Text("Year of study") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) }
-            item { OutlinedTextField(manifesto, { manifesto = it }, label = { Text("What I Plan to Do") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+            item { OutlinedTextField(manifesto, { manifesto = it }, label = { Text("Manifesto") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
             item { OutlinedTextField(experience, { experience = it }, label = { Text("Experience (optional)") }, modifier = Modifier.fillMaxWidth(), minLines = 2) }
             item {
                 OutlinedButton(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
