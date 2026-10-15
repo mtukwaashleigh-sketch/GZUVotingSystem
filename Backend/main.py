@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+from pydantic import BaseModel, Field
+
 from fastapi import (
     FastAPI,
     Depends,
@@ -418,24 +420,28 @@ def login(
             detail="Invalid email or password"
         )
 
-    identifier = (voter.student_id or "").strip().upper()
+    identifier = " ".join((voter.student_id or "").strip().upper().split())
+    if not identifier:
+        raise HTTPException(status_code=403, detail="This account has no institutional identifier. Contact Registry/HR.")
+
     identity = (
         db.query(InstitutionalIdentity)
         .filter(InstitutionalIdentity.identifier == identifier)
         .first()
     )
 
-    # Do not invent or trust a manually entered name when Registry/HR has no
-    # matching record. The user may sign in, but cannot submit a nomination
-    # until the official roster is imported and this identity is verified.
-    if identity:
-        official_name = (identity.full_name or "").strip()
-        if not official_name:
-            identity = None
-        else:
-            voter.full_name = official_name
-            voter.identity_type = identity.identity_type
-            db.commit()
+    # Registry/HR roster is the authority for identity. An account whose
+    # identifier is absent from the official roster is not a verified person.
+    if not identity or not (identity.full_name or "").strip():
+        raise HTTPException(
+            status_code=403,
+            detail="Identity not verified. Your student registration number or employee EC number must exist in the official GZU Registry/HR roster."
+        )
+
+    official_name = " ".join(identity.full_name.split())
+    voter.full_name = official_name
+    voter.identity_type = identity.identity_type
+    db.commit()
 
     return {
         "message": "Login successful",
@@ -1119,6 +1125,102 @@ def cast_vote(
         "blockchain_transaction": (
             receipt["transactionHash"].hex()
         )
+    }
+
+
+class BallotSelection(BaseModel):
+    position: str = Field(min_length=1, max_length=120)
+    candidate_id: int = Field(gt=0)
+
+
+class BallotSubmission(BaseModel):
+    student_id: str = Field(min_length=1, max_length=120)
+    election_id: int = Field(gt=0)
+    selections: list[BallotSelection] = Field(min_length=1, max_length=30)
+
+
+@app.post("/vote/ballot")
+def cast_ballot(payload: BallotSubmission, db: Session = Depends(get_db)):
+    """Submit all position selections in one request after validating the complete ballot."""
+    student_id = " ".join(payload.student_id.strip().upper().split())
+    voter = db.query(Voter).filter(Voter.student_id == student_id).first()
+    if not voter:
+        raise HTTPException(status_code=404, detail="Institutional voter account not found.")
+
+    election = db.query(Election).filter(Election.id == payload.election_id).first()
+    if not election or election.is_deleted:
+        raise HTTPException(status_code=404, detail="Election not found.")
+    if election.status != "ongoing":
+        raise HTTPException(status_code=409, detail="This election is not open for voting.")
+
+    positions = [s.position.strip() for s in payload.selections]
+    if len(set(p.casefold() for p in positions)) != len(positions):
+        raise HTTPException(status_code=400, detail="Select only one candidate for each position.")
+
+    existing = db.query(VotingRecord).filter(
+        VotingRecord.student_id == student_id,
+        VotingRecord.election_id == payload.election_id
+    ).all()
+    if existing:
+        raise HTTPException(status_code=409, detail="You have already submitted a ballot for this election.")
+
+    # Validate every choice before writing any votes.
+    choices = []
+    for selection in payload.selections:
+        candidate = db.query(Candidate).filter(
+            Candidate.id == selection.candidate_id,
+            Candidate.election_id == payload.election_id,
+            Candidate.position == selection.position.strip(),
+            Candidate.is_withdrawn == False
+        ).first()
+        if not candidate:
+            raise HTTPException(status_code=400, detail=f"Invalid candidate selection for {selection.position}.")
+        choices.append((candidate, selection.position.strip()))
+
+    blockchain_id, _ = _verify_blockchain_election_mapping(election)
+    results = []
+    # Blockchain transactions are individually mined and cannot be rolled back as a group.
+    # Validate all selections first and record exactly which transactions succeeded.
+    for candidate, position in choices:
+        chain_candidate_id = _ensure_candidate_blockchain_mapping(
+            db, election, candidate, verified_chain_id=blockchain_id
+        )
+        voter_hash = web3.keccak(text=f"{student_id}:{payload.election_id}:{position}")
+        try:
+            receipt = submit_vote(
+                election_id=blockchain_id,
+                candidate_id=chain_candidate_id,
+                voter_hash=voter_hash
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=("Ballot processing stopped after a blockchain transaction failure. "
+                        "Contact the election administrator before retrying; do not resubmit blindly. "
+                        f"Failure: {type(exc).__name__}.")
+            )
+        results.append((candidate, position, receipt["transactionHash"].hex()))
+
+    try:
+        for candidate, position, tx_hash in results:
+            db.add(VotingRecord(student_id=student_id, election_id=payload.election_id, position=position))
+            db.add(Vote(election_id=payload.election_id, candidate_id=candidate.id))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Blockchain transactions were sent but the database update failed. Contact the administrator for reconciliation."
+        ) from exc
+
+    return {
+        "message": "Ballot submitted successfully",
+        "election_id": payload.election_id,
+        "selections": [
+            {"position": position, "candidate_id": candidate.id,
+             "candidate_name": candidate.name, "blockchain_transaction": tx_hash}
+            for candidate, position, tx_hash in results
+        ]
     }
 
 

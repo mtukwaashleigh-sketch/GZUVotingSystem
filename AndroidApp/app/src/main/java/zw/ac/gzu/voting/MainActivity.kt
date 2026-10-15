@@ -2205,20 +2205,30 @@ fun VotingScreen(
                                     hasVoted = true
                                     message = "You have already voted in this election, or your voting status could not be verified. No new votes were submitted."
                                 } else {
-                                    var failed = false
-                                    for ((_, candidateId) in selectedByPosition) {
-                                        val response = RetrofitClient.api.castVote(studentId, electionId, candidateId)
-                                        if (!response.isSuccessful) {
-                                            message = response.errorBody()?.string()?.take(240)
-                                                ?: "A vote could not be submitted. Contact the election administrator before retrying."
-                                            failed = true
-                                            break
+                                    if (selectedByPosition.isEmpty()) {
+                                        message = "Select one candidate for at least one position."
+                                    } else {
+                                        val ballot = zw.ac.gzu.voting.api.BallotSubmission(
+                                            student_id = studentId,
+                                            election_id = electionId,
+                                            selections = selectedByPosition.map { (position, candidateId) ->
+                                                zw.ac.gzu.voting.api.BallotSelection(position, candidateId)
+                                            }
+                                        )
+                                        val response = RetrofitClient.api.castBallot(ballot)
+                                        if (response.isSuccessful) {
+                                            message = "Your ballot has been submitted successfully."
+                                            hasVoted = true
+                                            showConfirmation = false
+                                        } else {
+                                            message = response.errorBody()?.string()?.take(300)
+                                                ?: "The ballot could not be submitted. Verify your status before retrying."
+                                            // Refresh status so a completed ballot cannot return to candidate selection.
+                                            val refreshed = RetrofitClient.api.getVoterStatus(electionId, studentId)
+                                            if (refreshed.isSuccessful && refreshed.body()?.has_voted == true) {
+                                                hasVoted = true
+                                            }
                                         }
-                                    }
-                                    if (!failed) {
-                                        message = "Your ballot has been submitted successfully."
-                                        hasVoted = true
-                                        showConfirmation = false
                                     }
                                 }
                             } catch (e: Exception) {

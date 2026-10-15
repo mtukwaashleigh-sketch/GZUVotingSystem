@@ -10,6 +10,7 @@ import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Body
 
 interface VotingApi {
 
@@ -53,6 +54,9 @@ interface VotingApi {
         @Path("election_id") electionId: Int,
         @Query("student_id") studentId: String
     ): Response<VoterStatus>
+
+    @POST("vote/ballot")
+    suspend fun castBallot(@Body ballot: BallotSubmission): Response<BallotResponse>
 
     @POST("vote")
     suspend fun castVote(
