@@ -2357,7 +2357,6 @@ def create_voter_page(
             method="post"
             action="/admin/voters/create"
         >
-            {csrf_input(request)}
             <label>Institutional ID type</label>
             <select name="identity_type" required>
                 <option value="student">Student ID / registration number</option>
