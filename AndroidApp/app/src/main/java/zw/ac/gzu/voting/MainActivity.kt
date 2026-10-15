@@ -5,6 +5,15 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.nio.charset.StandardCharsets
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -40,6 +49,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -624,6 +634,105 @@ fun WelcomeScreen(
 
 
 // ============================================================
+// SECURE SAVED LOGIN CREDENTIALS
+// Passwords are encrypted with an AES key stored in Android Keystore.
+// The password is never written to ordinary SharedPreferences as plaintext.
+// ============================================================
+
+private data class SavedLoginCredentials(
+    val email: String,
+    val password: String
+)
+
+private object LoginCredentialVault {
+    private const val PREFS_NAME = "gzu_secure_login"
+    private const val EMAIL_KEY = "saved_email"
+    private const val PASSWORD_KEY = "saved_password"
+    private const val KEYSTORE_ALIAS = "gzu_voting_login_aes_key"
+    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    private const val TRANSFORMATION = "AES/GCM/NoPadding"
+
+    fun load(context: Context): SavedLoginCredentials? {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val encryptedEmail = prefs.getString(EMAIL_KEY, null) ?: return null
+        val encryptedPassword = prefs.getString(PASSWORD_KEY, null) ?: return null
+
+        return try {
+            val email = decrypt(encryptedEmail)
+            val password = decrypt(encryptedPassword)
+            if (email.isBlank() || password.isBlank()) null
+            else SavedLoginCredentials(email, password)
+        } catch (_: Exception) {
+            // If the encrypted values or Android Keystore key are no longer valid,
+            // discard them and let the user sign in normally.
+            clear(context)
+            null
+        }
+    }
+
+    fun save(context: Context, email: String, password: String) {
+        val encryptedEmail = encrypt(email)
+        val encryptedPassword = encrypt(password)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(EMAIL_KEY, encryptedEmail)
+            .putString(PASSWORD_KEY, encryptedPassword)
+            .apply()
+    }
+
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
+    private fun getOrCreateSecretKey(): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        (keyStore.getKey(KEYSTORE_ALIAS, null) as? SecretKey)?.let { return it }
+
+        val generator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES,
+            ANDROID_KEYSTORE
+        )
+        generator.init(
+            KeyGenParameterSpec.Builder(
+                KEYSTORE_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    private fun encrypt(value: String): String {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
+        val encryptedBytes = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
+        val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+        val ciphertext = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+        return "$iv:$ciphertext"
+    }
+
+    private fun decrypt(value: String): String {
+        val parts = value.split(":", limit = 2)
+        require(parts.size == 2) { "Invalid saved credential format" }
+        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+        val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            getOrCreateSecretKey(),
+            GCMParameterSpec(128, iv)
+        )
+        return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
+    }
+}
+
+// ============================================================
 // LOGIN SCREEN
 // ============================================================
 
@@ -632,13 +741,19 @@ fun LoginScreen(
     onBack: () -> Unit,
     onLoginSuccess: (String, String) -> Unit
 ) {
+    val context = LocalContext.current
+    val savedCredentials = remember { LoginCredentialVault.load(context) }
 
     var studentEmail by remember {
-        mutableStateOf("")
+        mutableStateOf(savedCredentials?.email.orEmpty())
     }
 
     var password by remember {
-        mutableStateOf("")
+        mutableStateOf(savedCredentials?.password.orEmpty())
+    }
+
+    var rememberLogin by remember {
+        mutableStateOf(savedCredentials != null)
     }
 
     var showPassword by remember {
@@ -1179,6 +1294,35 @@ fun LoginScreen(
                         }
 
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = rememberLogin,
+                                onCheckedChange = { checked ->
+                                    rememberLogin = checked
+                                    if (!checked) {
+                                        LoginCredentialVault.clear(context)
+                                    }
+                                }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Remember me",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Save this login securely on this device",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
                         Button(
                             onClick = {
 
@@ -1225,6 +1369,20 @@ fun LoginScreen(
                                                 if (
                                                     loginResponse != null
                                                 ) {
+                                                    if (rememberLogin) {
+                                                        runCatching {
+                                                            LoginCredentialVault.save(
+                                                                context,
+                                                                studentEmail.trim(),
+                                                                password
+                                                            )
+                                                        }.onFailure {
+                                                            // Do not fail an otherwise successful login
+                                                            // if this device cannot save credentials.
+                                                        }
+                                                    } else {
+                                                        LoginCredentialVault.clear(context)
+                                                    }
 
                                                     onLoginSuccess(
                                                         loginResponse.student_id,
