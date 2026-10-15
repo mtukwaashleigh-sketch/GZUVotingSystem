@@ -1,4 +1,3 @@
-
 package zw.ac.gzu.voting.api
 
 data class LoginResponse(
