@@ -294,6 +294,10 @@ fun VotingApp() {
             mutableStateOf("")
         }
 
+        var institutionalFullName by remember {
+            mutableStateOf("")
+        }
+
         var selectedElectionId by remember {
             mutableStateOf(0)
         }
@@ -317,10 +321,10 @@ fun VotingApp() {
                     currentScreen = "welcome"
                 },
 
-                onLoginSuccess = { registrationNumber ->
+                onLoginSuccess = { registrationNumber, verifiedFullName ->
 
-                    studentId =
-                        registrationNumber
+                    studentId = registrationNumber
+                    institutionalFullName = verifiedFullName.trim()
 
                     currentScreen =
                         "dashboard"
@@ -372,6 +376,7 @@ fun VotingApp() {
                 onLogout = {
 
                     studentId = ""
+                    institutionalFullName = ""
 
                     selectedElectionId = 0
 
@@ -383,6 +388,7 @@ fun VotingApp() {
         } else if (currentScreen == "nomination") {
             NominationScreen(
                 studentId = studentId,
+                fullName = institutionalFullName,
                 onBack = { currentScreen = "dashboard" }
             )
         } else if (currentScreen == "my_nominations") {
@@ -624,7 +630,7 @@ fun WelcomeScreen(
 @Composable
 fun LoginScreen(
     onBack: () -> Unit,
-    onLoginSuccess: (String) -> Unit
+    onLoginSuccess: (String, String) -> Unit
 ) {
 
     var studentEmail by remember {
@@ -1221,8 +1227,8 @@ fun LoginScreen(
                                                 ) {
 
                                                     onLoginSuccess(
-                                                        loginResponse
-                                                            .student_id
+                                                        loginResponse.student_id,
+                                                        loginResponse.full_name.orEmpty()
                                                     )
 
                                                 } else {
@@ -2562,13 +2568,12 @@ private fun formPart(value: String): okhttp3.RequestBody =
     okhttp3.RequestBody.create(okhttp3.MultipartBody.FORM, value)
 
 @Composable
-fun NominationScreen(studentId: String, onBack: () -> Unit) {
+fun NominationScreen(studentId: String, fullName: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var elections by remember { mutableStateOf<List<zw.ac.gzu.voting.api.Election>>(emptyList()) }
     var selectedElection by remember { mutableStateOf<zw.ac.gzu.voting.api.Election?>(null) }
     var position by remember { mutableStateOf("President") }
-    var fullName by remember { mutableStateOf("") }
     var faculty by remember { mutableStateOf("") }
     var department by remember { mutableStateOf("") }
     var programme by remember { mutableStateOf("") }
@@ -2599,7 +2604,23 @@ fun NominationScreen(studentId: String, onBack: () -> Unit) {
                 }
             }
             item { OutlinedTextField(position, { position = it }, label = { Text("Position (e.g. President)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-            item { Text("Your name is retrieved automatically from the verified institutional ID; it cannot be entered or edited here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item {
+                OutlinedTextField(
+                    value = fullName,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Official nominator name") },
+                    placeholder = { Text("Sign in with a verified GZU account") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                if (fullName.isBlank()) {
+                    Text(
+                        "Identity not verified. The official GZU Registry/HR roster must contain this ID before you can nominate.",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
             item { OutlinedTextField(faculty, { faculty = it }, label = { Text("Faculty / Division") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(department, { department = it }, label = { Text("Department / Unit") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
             item { OutlinedTextField(programme, { programme = it }, label = { Text("Programme / Role") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }

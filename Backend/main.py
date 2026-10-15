@@ -1,4 +1,5 @@
 import os
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -80,6 +81,20 @@ except Exception as migration_error:
     # Fail loudly rather than run the application with withdrawal checks unavailable.
     raise RuntimeError(
         "Could not apply the candidates.is_withdrawn database migration. "
+        "Check database permissions and schema."
+    ) from migration_error
+
+# Add the nomination identity mapping hash without deleting or resetting records.
+try:
+    nomination_columns = {column["name"] for column in inspect(engine).get_columns("candidate_nominations")}
+    if "identity_mapping_hash" not in nomination_columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE candidate_nominations ADD COLUMN identity_mapping_hash VARCHAR NULL"
+            ))
+except Exception as migration_error:
+    raise RuntimeError(
+        "Could not apply the candidate_nominations.identity_mapping_hash migration. "
         "Check database permissions and schema."
     ) from migration_error
 
@@ -403,11 +418,31 @@ def login(
             detail="Invalid email or password"
         )
 
+    identifier = (voter.student_id or "").strip().upper()
+    identity = (
+        db.query(InstitutionalIdentity)
+        .filter(InstitutionalIdentity.identifier == identifier)
+        .first()
+    )
+
+    # Do not invent or trust a manually entered name when Registry/HR has no
+    # matching record. The user may sign in, but cannot submit a nomination
+    # until the official roster is imported and this identity is verified.
+    if identity:
+        official_name = (identity.full_name or "").strip()
+        if not official_name:
+            identity = None
+        else:
+            voter.full_name = official_name
+            voter.identity_type = identity.identity_type
+            db.commit()
+
     return {
         "message": "Login successful",
-        "student_id": voter.student_id,
-        "full_name": voter.full_name,
-        "identity_type": voter.identity_type,
+        "student_id": identifier,
+        "full_name": (identity.full_name or "").strip() if identity else "",
+        "identity_type": identity.identity_type if identity else None,
+        "identity_verified": bool(identity),
         "email": voter.email
     }
 
@@ -522,30 +557,50 @@ async def submit_candidate_nomination(
     programme: str = Form(...), year_of_study: str = Form(...), manifesto: str = Form(...),
     experience: str = Form(""), photo: UploadFile = File(...), db: Session = Depends(get_db),
 ):
+    # full_name is intentionally ignored: the client is not allowed to choose
+    # the nominator's identity. Registry/HR supplies the authoritative name.
     required = [student_id, position, faculty, department, programme, year_of_study, manifesto]
     if any(not value.strip() for value in required):
         raise HTTPException(status_code=400, detail="Please complete all required nomination fields.")
+
     election = db.query(Election).filter(Election.id == election_id).first()
     if not election:
         raise HTTPException(status_code=404, detail="Election not found.")
     if election.status != "upcoming":
         raise HTTPException(status_code=400, detail="Nominations can only be submitted for an upcoming election.")
-    student_id = student_id.strip().upper()
+
+    student_id = " ".join(student_id.strip().upper().split())
+    identity = (
+        db.query(InstitutionalIdentity)
+        .filter(InstitutionalIdentity.identifier == student_id)
+        .first()
+    )
+    if not identity:
+        raise HTTPException(
+            status_code=409,
+            detail="Identity not verified: this institutional ID is not in the official GZU Registry/HR roster. Import the authoritative roster before nominating."
+        )
+    linked_name = " ".join((identity.full_name or "").split())
+    if not linked_name:
+        raise HTTPException(status_code=409, detail="The official Registry/HR record has no name. Contact Registry/HR.")
+
     nominator = db.query(Voter).filter(Voter.student_id == student_id).first()
     if not nominator:
-        raise HTTPException(status_code=404, detail="Institutional account not found.")
-    linked_name = (nominator.full_name or "").strip()
-    if not linked_name:
-        registry = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == student_id).first()
-        linked_name = registry.full_name if registry else ""
-    if not linked_name:
-        raise HTTPException(status_code=409, detail="Your institutional ID has no verified name mapping. Contact Registry/HR.")
+        raise HTTPException(status_code=404, detail="No institutional account is linked to this ID. Sign in with the account registered to this ID.")
+
+    # Synchronise the account's stored identity with the official roster.
+    nominator.full_name = linked_name
+    nominator.identity_type = identity.identity_type
+
     duplicate = db.query(CandidateNomination).filter(
-        CandidateNomination.student_id == student_id, CandidateNomination.election_id == election_id,
-        CandidateNomination.position == position, CandidateNomination.status.in_(["pending", "approved"])
+        CandidateNomination.student_id == student_id,
+        CandidateNomination.election_id == election_id,
+        CandidateNomination.position == position.strip(),
+        CandidateNomination.status.in_(["pending", "approved"])
     ).first()
     if duplicate:
         raise HTTPException(status_code=409, detail="You already have a pending or approved nomination for this position.")
+
     content_type = (photo.content_type or "").lower()
     if content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(status_code=400, detail="Photo must be JPG, PNG, or WebP.")
@@ -559,17 +614,42 @@ async def submit_candidate_nomination(
     )
     if not valid_signature:
         raise HTTPException(status_code=400, detail="The uploaded file is not a valid image of the declared type.")
+
+    # Keep a private database integrity fingerprint for the authoritative
+    # ID/name/type association. It contains no plaintext identity fields.
+    canonical_link = f"{student_id.casefold()}|{linked_name.casefold()}|{identity.identity_type.casefold()}"
+    identity_mapping_hash = hashlib.sha256(canonical_link.encode("utf-8")).hexdigest()
+
     ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[content_type]
     filename = f"{uuid4().hex}{ext}"
     (UPLOAD_DIR / filename).write_bytes(data)
     item = CandidateNomination(
-        student_id=student_id.strip(), election_id=election_id, position=position.strip(),
-        full_name=linked_name, faculty=faculty.strip(), department=department.strip(),
-        programme=programme.strip(), year_of_study=year_of_study.strip(), manifesto=manifesto.strip(),
-        experience=experience.strip(), photo_path=filename, status="pending",
-        created_at=datetime.now(timezone.utc).isoformat()
+        student_id=student_id,
+        election_id=election_id,
+        position=position.strip(),
+        full_name=linked_name,
+        faculty=faculty.strip(),
+        department=department.strip(),
+        programme=programme.strip(),
+        year_of_study=year_of_study.strip(),
+        manifesto=manifesto.strip(),
+        experience=experience.strip(),
+        photo_path=filename,
+        status="pending",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        identity_mapping_hash=identity_mapping_hash,
     )
-    db.add(item); db.commit(); db.refresh(item)
+    db.add(item)
+    try:
+        db.commit()
+        db.refresh(item)
+    except Exception:
+        db.rollback()
+        try:
+            (UPLOAD_DIR / filename).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
     return _nomination_payload(item, db)
 
 

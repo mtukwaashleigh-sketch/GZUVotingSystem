@@ -196,6 +196,7 @@ class CandidateNomination(Base):
     candidate_id = Column(Integer, nullable=True)
     created_at = Column(String, nullable=False)
     reviewed_at = Column(String, nullable=True)
+    identity_mapping_hash = Column(String, nullable=True, index=True)
 
 
 class CandidateProfile(Base):
