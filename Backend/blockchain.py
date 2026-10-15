@@ -271,6 +271,56 @@ voting_contract = web3.eth.contract(
 
 
 # ============================================================
+# TRANSACTION AUDIT PERSISTENCE
+# ============================================================
+
+def _persist_transaction_audit(function, receipt):
+    """Save mined transaction metadata without storing function arguments."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from database import SessionLocal
+    from models import BlockchainTransactionAudit
+
+    try:
+        tx_hash = receipt["transactionHash"].hex()
+        if not tx_hash.startswith("0x"):
+            tx_hash = "0x" + tx_hash
+        operation = getattr(function, "fn_name", None) or "contract_call"
+        block_number = receipt.get("blockNumber")
+        status = "confirmed" if int(receipt.get("status", 0)) == 1 else "failed"
+        db = SessionLocal()
+        try:
+            row = db.query(BlockchainTransactionAudit).filter(
+                BlockchainTransactionAudit.tx_hash == tx_hash
+            ).first()
+            if row is None:
+                row = BlockchainTransactionAudit(
+                    transaction_number="GZU-TX-" + uuid4().hex[:16].upper(),
+                    tx_hash=tx_hash,
+                    chain_id=int(web3.eth.chain_id),
+                    network_name="Sepolia" if int(web3.eth.chain_id) == 11155111 else f"Chain {web3.eth.chain_id}",
+                    contract_address=str(voting_contract.address),
+                    operation_type=str(operation),
+                    block_number=int(block_number) if block_number is not None else None,
+                    transaction_status=status,
+                    gas_used=str(receipt.get("gasUsed")) if receipt.get("gasUsed") is not None else None,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                db.add(row)
+            else:
+                row.block_number = int(block_number) if block_number is not None else None
+                row.transaction_status = status
+                row.gas_used = str(receipt.get("gasUsed")) if receipt.get("gasUsed") is not None else None
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        # Do not resubmit a mined transaction just because audit storage failed.
+        print("WARNING: transaction mined but audit persistence failed:",
+              type(exc).__name__, str(exc))
+
+
+# ============================================================
 # TRANSACTION HELPER
 # ============================================================
 
@@ -344,6 +394,7 @@ def send_transaction(function):
     print("Blockchain transaction sent:", tx_hash_hex)
 
     receipt = web3.eth.wait_for_transaction_receipt(transaction_hash)
+    _persist_transaction_audit(function, receipt)
 
     if receipt.status != 1:
         print("BLOCKCHAIN TRANSACTION FAILED")

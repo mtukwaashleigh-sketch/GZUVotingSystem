@@ -211,3 +211,23 @@ class CandidateProfile(Base):
     year_of_study = Column(String, nullable=True)
     manifesto = Column(String, nullable=True)
     experience = Column(String, nullable=True)
+
+
+class BlockchainTransactionAudit(Base):
+    """Durable searchable record of a transaction submitted by the application."""
+    __tablename__ = "blockchain_transaction_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_number = Column(String(40), nullable=False, unique=True, index=True)
+    tx_hash = Column(String(80), nullable=False, unique=True, index=True)
+    chain_id = Column(Integer, nullable=False, index=True)
+    network_name = Column(String(40), nullable=False, default="Sepolia")
+    contract_address = Column(String(80), nullable=False, index=True)
+    operation_type = Column(String(100), nullable=False, index=True)
+    block_number = Column(Integer, nullable=True, index=True)
+    transaction_status = Column(String(30), nullable=False, index=True)
+    gas_used = Column(String(40), nullable=True)
+    created_at = Column(String(40), nullable=False, index=True)
+    verified_at = Column(String(40), nullable=True)
+    last_verification_status = Column(String(40), nullable=True)
+    last_verification_details = Column(String, nullable=True)
