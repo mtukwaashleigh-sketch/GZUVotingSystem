@@ -11,7 +11,8 @@ from models import (
     CandidateProfile,
     InstitutionalIdentity,
     VotingRecord,
-    Vote
+    Vote,
+    BlockchainTransactionAudit
 )
 
 
@@ -99,7 +100,8 @@ def page_template(
         "elections": "",
         "candidates": "",
         "nominations": "",
-        "results": ""
+        "results": "",
+        "transactions": ""
     }
 
     if active_page in active:
@@ -1680,6 +1682,14 @@ def page_template(
 
             <span>Results</span>
 
+        </a>
+
+        <a
+            href="/admin/transactions"
+            class="nav-link {active["transactions"]}"
+        >
+            <span class="nav-icon">⛓</span>
+            <span>Blockchain Transactions</span>
         </a>
 
     </nav>
@@ -5665,3 +5675,183 @@ def edit_election(
 
     finally:
         db.close()
+
+
+# ============================================================
+# BLOCKCHAIN TRANSACTION AUDIT
+# ============================================================
+
+@router.get("/admin/transactions", response_class=HTMLResponse)
+def admin_transactions(
+    request: Request,
+    q: str = "",
+    admin: str = Depends(require_admin)
+):
+    """Searchable admin UI for historical blockchain transaction records."""
+    db = get_db()
+    try:
+        query = db.query(BlockchainTransactionAudit)
+        term = (q or "").strip()
+        if term:
+            escaped = term.replace("%", r"\%").replace("_", r"\_")
+            query = query.filter(
+                BlockchainTransactionAudit.transaction_number.ilike(f"%{escaped}%") |
+                BlockchainTransactionAudit.tx_hash.ilike(f"%{escaped}%") |
+                BlockchainTransactionAudit.operation_type.ilike(f"%{escaped}%")
+            )
+        rows = query.order_by(BlockchainTransactionAudit.id.desc()).limit(200).all()
+        body_rows = []
+        for row in rows:
+            tx_hash = safe(row.tx_hash)
+            explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}" if row.chain_id == 11155111 else ""
+            explorer_link = (
+                f'<a class="tx-link" href="{explorer}" target="_blank" rel="noopener noreferrer">View on Etherscan</a>'
+                if explorer else '<span class="muted">Not Sepolia</span>'
+            )
+            status = safe(row.last_verification_status or row.transaction_status or "Unknown")
+            body_rows.append(f"""
+              <tr>
+                <td><strong>{safe(row.transaction_number)}</strong><div class="muted small">{safe(row.operation_type)}</div></td>
+                <td><code class="hash">{tx_hash}</code><div>{explorer_link}</div></td>
+                <td>{safe(row.network_name)}<div class="muted small">Chain ID: {safe(row.chain_id)}</div></td>
+                <td>{safe(row.block_number if row.block_number is not None else "Pending")}</td>
+                <td><span class="status-pill">{status}</span><div class="muted small">Tx: {safe(row.transaction_status)}</div></td>
+                <td>{safe(row.created_at)}<div class="muted small">Verified: {safe(row.verified_at or "Never")}</div></td>
+                <td>
+                  <form method="post" action="/admin/transactions/verify">
+                    {csrf_input(request)}
+                    <input type="hidden" name="identifier" value="{tx_hash}">
+                    <button class="verify-button" type="submit">Verify on Blockchain</button>
+                  </form>
+                </td>
+              </tr>
+            """)
+        content = f"""
+        <style>
+          .tx-tools{{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0 22px}}
+          .tx-tools input{{flex:1;min-width:220px;padding:12px;border:1px solid #d1d5db;border-radius:8px}}
+          .tx-tools button,.verify-button{{background:#087f3e;color:white;border:0;padding:10px 13px;border-radius:7px;cursor:pointer;font-weight:600}}
+          .tx-table-wrap{{overflow-x:auto;background:white;border:1px solid #e5e7eb;border-radius:12px}}
+          .tx-table{{border-collapse:collapse;width:100%;min-width:1050px}}
+          .tx-table th,.tx-table td{{text-align:left;padding:13px;border-bottom:1px solid #e5e7eb;vertical-align:top}}
+          .tx-table th{{background:#f8faf9;font-size:12px;text-transform:uppercase;color:#64748b}}
+          .tx-link{{color:#087f3e;font-weight:600;font-size:12px}}
+          .hash{{font-size:11px;overflow-wrap:anywhere;max-width:230px;display:inline-block}}
+          .muted,.small{{color:#6b7280;font-size:12px;margin-top:4px}}
+          .status-pill{{display:inline-block;padding:4px 7px;background:#eef2ff;border-radius:6px;font-size:12px;overflow-wrap:anywhere}}
+          .tx-empty{{padding:28px;text-align:center;color:#64748b}}
+          .tx-help{{padding:14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:9px;color:#166534;margin-bottom:15px}}
+        </style>
+        <div class="tx-help">
+          Search saved transaction numbers, full transaction hashes, or operation names. Use “Verify on Blockchain” to compare a saved record with Sepolia. Historical transactions without a saved audit record can be verified by entering their full hash in the search box only if an audit record exists; use the direct verification endpoint for hash-only checks.
+        </div>
+        <form class="tx-tools" method="get" action="/admin/transactions">
+          <input name="q" value="{safe(term)}" placeholder="Transaction number, 0x transaction hash, or operation">
+          <button type="submit">Search</button>
+          <a href="/admin/transactions" style="align-self:center">Clear</a>
+        </form>
+        <p class="muted">Showing {len(rows)} record(s), maximum 200 per search.</p>
+        <div class="tx-table-wrap">
+          <table class="tx-table">
+            <thead><tr><th>Transaction</th><th>Blockchain hash</th><th>Network</th><th>Block</th><th>Status</th><th>Recorded / verified</th><th>Action</th></tr></thead>
+            <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="7" class="tx-empty">No transaction audit records found. New transactions must be recorded by the backend to appear here.</td></tr>'}</tbody>
+          </table>
+        </div>
+        """
+        return HTMLResponse(page_template("Blockchain Transactions", content, get_flash(request), "transactions"))
+    finally:
+        db.close()
+
+
+@router.post("/admin/transactions/verify", response_class=HTMLResponse)
+def admin_verify_transaction(
+    request: Request,
+    identifier: str = Form(...),
+    csrf_token: str = Form(...),
+    admin: str = Depends(require_admin)
+):
+    """Verify an audit-recorded transaction from the dashboard."""
+    expected_csrf = request.session.get("admin_review_csrf")
+    if not expected_csrf or not secrets.compare_digest(expected_csrf, csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token. Refresh the page and try again.")
+
+    from datetime import datetime, timezone
+    import re
+    from blockchain import web3, CONTRACT_ADDRESS
+
+    db = get_db()
+    try:
+        identifier = identifier.strip()
+        row = db.query(BlockchainTransactionAudit).filter(
+            BlockchainTransactionAudit.tx_hash == identifier
+        ).first()
+        if row is None:
+            return RedirectResponse("/admin/transactions?q=" + identifier, status_code=303)
+        tx_hash = row.tx_hash
+        try:
+            tx = web3.eth.get_transaction(tx_hash)
+            receipt = web3.eth.get_transaction_receipt(tx_hash)
+            block = web3.eth.get_block(receipt["blockNumber"])
+            chain_id = int(web3.eth.chain_id)
+        except Exception:
+            row.last_verification_status = "INCONCLUSIVE_RPC_ERROR"
+            row.last_verification_details = "RPC lookup failed; this does not prove the transaction failed."
+            row.verified_at = datetime.now(timezone.utc).isoformat()
+            db.commit()
+            set_flash(request, "Verification inconclusive: blockchain RPC lookup failed. The transaction was not marked failed.")
+            return RedirectResponse("/admin/transactions?q=" + tx_hash, status_code=303)
+
+        actual_to = tx.get("to")
+        receipt_status = int(receipt.get("status", 0))
+        actual_status = "confirmed" if receipt_status == 1 else "failed"
+        checks = {
+            "transaction_found": True,
+            "successful_execution": receipt_status == 1,
+            "sepolia_network": chain_id == 11155111,
+            "expected_contract": bool(actual_to) and actual_to.lower() == str(CONTRACT_ADDRESS).lower(),
+            "database_hash_matches": row.tx_hash.lower() == tx_hash.lower(),
+            "database_chain_matches": row.chain_id == chain_id,
+            "database_contract_matches": row.contract_address.lower() == str(actual_to or "").lower(),
+            "database_block_matches": row.block_number == int(receipt["blockNumber"]),
+            "database_status_matches": row.transaction_status.lower() == actual_status,
+        }
+        if receipt_status != 1:
+            overall = "ON_CHAIN_FAILED"
+        elif not checks["sepolia_network"] or not checks["expected_contract"]:
+            overall = "NETWORK_OR_CONTRACT_MISMATCH"
+        elif all(checks.values()):
+            overall = "VERIFIED_MATCH"
+        else:
+            overall = "DATABASE_BLOCKCHAIN_MISMATCH"
+
+        now = datetime.now(timezone.utc).isoformat()
+        row.verified_at = now
+        row.last_verification_status = overall
+        row.last_verification_details = str(checks)
+        db.commit()
+        explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}" if chain_id == 11155111 else ""
+        result_html = f"""
+        <style>
+          .verify-card{{background:white;padding:22px;border:1px solid #e5e7eb;border-radius:12px;max-width:900px}}
+          .verify-status{{font-size:20px;font-weight:700;overflow-wrap:anywhere}}
+          .verify-list{{line-height:1.9;overflow-wrap:anywhere}}
+          .tx-link{{color:#087f3e;font-weight:600}}
+        </style>
+        <div class="verify-card">
+          <h2>Verification result</h2>
+          <p class="verify-status">{safe(overall.replace('_',' '))}</p>
+          <p>Transaction number: <strong>{safe(row.transaction_number)}</strong></p>
+          <p>Hash: <code>{safe(tx_hash)}</code></p>
+          <p>Network chain ID: {chain_id} · Block: {int(receipt["blockNumber"])}</p>
+          <p>Execution: {"SUCCESS" if receipt_status == 1 else "FAILED"}</p>
+          <h3>Database comparison</h3>
+          <ul class="verify-list">{''.join(f'<li>{"PASS" if ok else "MISMATCH"} — {safe(key.replace("_"," "))}</li>' for key,ok in checks.items())}</ul>
+          <p>Block timestamp (UTC): {datetime.fromtimestamp(int(block["timestamp"]), timezone.utc).isoformat()}</p>
+          {f'<p><a class="tx-link" target="_blank" rel="noopener noreferrer" href="{explorer}">View on Sepolia Etherscan</a></p>' if explorer else ''}
+          <p><a href="/admin/transactions?q={safe(tx_hash)}">Back to transaction history</a></p>
+        </div>
+        """
+        return HTMLResponse(page_template("Transaction Verification", result_html, None, "transactions"))
+    finally:
+        db.close()
+
