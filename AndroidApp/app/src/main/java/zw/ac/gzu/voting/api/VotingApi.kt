@@ -1,5 +1,7 @@
 package zw.ac.gzu.voting.api
 
+import com.google.gson.JsonObject
+
 import retrofit2.Response
 import retrofit2.http.GET
 import retrofit2.http.Multipart
@@ -56,7 +58,12 @@ interface VotingApi {
     ): Response<VoterStatus>
 
     @POST("vote/ballot")
-    suspend fun castBallot(@Body ballot: BallotSubmission): Response<BallotResponse>
+    suspend fun castBallot(@Body ballot: BallotSubmission): Response<JsonObject>
+
+    @GET("vote/receipt/verify/{receipt_code}")
+    suspend fun verifyVoterReceipt(
+        @Path("receipt_code") receiptCode: String
+    ): Response<JsonObject>
 
     @POST("vote")
     suspend fun castVote(

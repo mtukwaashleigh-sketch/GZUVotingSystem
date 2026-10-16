@@ -12,7 +12,8 @@ from models import (
     InstitutionalIdentity,
     VotingRecord,
     Vote,
-    BlockchainTransactionAudit
+    BlockchainTransactionAudit,
+    VoterReceipt
 )
 
 
@@ -101,7 +102,8 @@ def page_template(
         "candidates": "",
         "nominations": "",
         "results": "",
-        "transactions": ""
+        "transactions": "",
+        "receipts": ""
     }
 
     if active_page in active:
@@ -169,7 +171,45 @@ def page_template(
         }}
 
         a {{
-            text-decoration: none;
+            text-decoration: underline;
+            text-underline-offset: 0.15em;
+        }}
+
+        /* Keyboard, low-vision and motion accessibility */
+        :focus-visible {{
+            outline: 3px solid #ffbf47 !important;
+            outline-offset: 3px;
+            border-radius: 3px;
+        }}
+
+        .skip-link {{
+            position: absolute;
+            left: 12px;
+            top: -100px;
+            z-index: 3000;
+            padding: 12px 16px;
+            background: #ffffff;
+            color: #111827;
+            border: 2px solid #111827;
+            border-radius: 6px;
+            font-weight: 700;
+        }}
+
+        .skip-link:focus {{ top: 12px; }}
+
+        @media (prefers-reduced-motion: reduce) {{
+            *, *::before, *::after {{
+                scroll-behavior: auto !important;
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }}
+        }}
+
+        @media (forced-colors: active) {{
+            button, a, input, select, textarea {{
+                border: 1px solid ButtonText;
+            }}
         }}
 
 
@@ -1578,6 +1618,7 @@ def page_template(
 
 
 <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
 
 
 <!-- ========================================================
@@ -1692,6 +1733,14 @@ def page_template(
             <span>Blockchain Transactions</span>
         </a>
 
+        <a
+            href="/admin/receipts"
+            class="nav-link {active["receipts"]}"
+        >
+            <span class="nav-icon">▣</span>
+            <span>Voter Receipts</span>
+        </a>
+
     </nav>
 
 <div class="sidebar-footer">
@@ -1716,7 +1765,7 @@ def page_template(
      MAIN
      ======================================================== -->
 
-<main class="main">
+<main id="main-content" class="main">
 
 
     <header class="topbar">
@@ -5673,6 +5722,84 @@ def edit_election(
         db.rollback()
         raise
 
+    finally:
+        db.close()
+
+
+# ============================================================
+# VOTER RECEIPT MONITORING (ADMIN)
+# ============================================================
+
+@router.get("/admin/receipts", response_class=HTMLResponse)
+def admin_voter_receipts(
+    request: Request,
+    q: str = "",
+    admin: str = Depends(require_admin),
+):
+    """Show receipt metadata only; never expose receipt codes, voter IDs, choices, or tx hashes."""
+    db = get_db()
+    try:
+        total = db.query(VoterReceipt).count()
+        term = (q or "").strip()
+        query = db.query(VoterReceipt)
+        if term:
+            # Search only public administrative metadata, not secret receipt codes or tx hashes.
+            if term.isdigit():
+                query = query.filter(VoterReceipt.election_id == int(term))
+            else:
+                query = query.filter(VoterReceipt.created_at.ilike(f"%{term[:80]}%"))
+        rows = query.order_by(VoterReceipt.id.desc()).limit(200).all()
+        election_ids = {row.election_id for row in rows}
+        election_titles = {}
+        if election_ids:
+            for election in db.query(Election).filter(Election.id.in_(election_ids)).all():
+                election_titles[election.id] = election.title
+        row_html = []
+        for row in rows:
+            row_html.append(f"""
+              <tr>
+                <td>{safe(row.id)}</td>
+                <td>{safe(election_titles.get(row.election_id, f'Election #{row.election_id}'))}</td>
+                <td>{safe(row.chain_id)}</td>
+                <td>{safe(row.expected_transactions)}</td>
+                <td>{safe(row.created_at)}</td>
+                <td><span class="receipt-status">Stored · verify on demand</span></td>
+              </tr>
+            """)
+        content = f"""
+        <style>
+          .receipt-summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0}}
+          .receipt-card{{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px}}
+          .receipt-card span{{display:block;color:#64748b;font-size:13px}}
+          .receipt-card strong{{display:block;font-size:28px;margin-top:5px;color:#123b28}}
+          .receipt-note{{padding:14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:9px;color:#166534;margin:16px 0}}
+          .receipt-search{{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}}
+          .receipt-search input{{padding:11px;border:1px solid #d1d5db;border-radius:8px;min-width:240px;flex:1}}
+          .receipt-search button{{background:#087f3e;color:#fff;border:0;padding:10px 15px;border-radius:7px;font-weight:600}}
+          .receipt-table-wrap{{overflow-x:auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px}}
+          .receipt-table{{width:100%;border-collapse:collapse;min-width:750px}}
+          .receipt-table th,.receipt-table td{{padding:13px;text-align:left;border-bottom:1px solid #e5e7eb}}
+          .receipt-table th{{background:#f8faf9;font-size:12px;text-transform:uppercase;color:#64748b}}
+          .receipt-status{{font-size:12px;padding:5px 8px;background:#fff7df;color:#854d0e;border-radius:6px}}
+        </style>
+        <div class="page-heading"><div><h1>Voter Receipts</h1><p>Monitor receipt records without exposing voter identities or ballot selections.</p></div></div>
+        <div class="receipt-summary">
+          <div class="receipt-card"><span>Total receipt records</span><strong>{total}</strong></div>
+          <div class="receipt-card"><span>Records shown</span><strong>{len(rows)}</strong></div>
+        </div>
+        <div class="receipt-note">Privacy note: receipt codes are not stored in plaintext and are intentionally not displayed here. This page shows stored receipt metadata only; it does not claim that every transaction has been freshly verified. Voters can verify a code using the app or the public API.</div>
+        <form class="receipt-search" method="get" action="/admin/receipts">
+          <input name="q" value="{safe(term)}" placeholder="Filter by election ID or creation timestamp">
+          <button type="submit">Filter</button>
+          <a href="/admin/receipts" style="align-self:center">Clear</a>
+        </form>
+        <p>Showing up to 200 newest receipt records.</p>
+        <div class="receipt-table-wrap"><table class="receipt-table">
+          <thead><tr><th>Record</th><th>Election</th><th>Chain ID</th><th>Expected transactions</th><th>Created</th><th>Verification</th></tr></thead>
+          <tbody>{''.join(row_html) if row_html else '<tr><td colspan="6" style="text-align:center;padding:28px;color:#64748b">No voter receipt records found.</td></tr>'}</tbody>
+        </table></div>
+        """
+        return HTMLResponse(page_template("Voter Receipts", content, get_flash(request), "receipts"))
     finally:
         db.close()
 

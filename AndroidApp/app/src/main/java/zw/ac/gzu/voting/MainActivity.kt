@@ -3,6 +3,8 @@ package zw.ac.gzu.voting
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import android.content.Context
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
@@ -50,6 +52,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Switch
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -74,6 +77,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -185,12 +197,44 @@ private val GzuDarkColorScheme =
     )
 
 
+// High-contrast scheme: deliberately uses black/white and a strong blue accent.
+private val GzuHighContrastLight = lightColorScheme(
+    primary = Color(0xFF0033CC), onPrimary = Color.White,
+    secondary = Color.Black, onSecondary = Color.White,
+    background = Color.White, onBackground = Color.Black,
+    surface = Color.White, onSurface = Color.Black,
+    surfaceVariant = Color(0xFFF0F0F0), onSurfaceVariant = Color.Black,
+    outline = Color.Black, outlineVariant = Color(0xFF333333),
+    error = Color(0xFFB00020), onError = Color.White
+)
+
+private val GzuHighContrastDark = darkColorScheme(
+    primary = Color(0xFFFFFF00), onPrimary = Color.Black,
+    secondary = Color.White, onSecondary = Color.Black,
+    background = Color.Black, onBackground = Color.White,
+    surface = Color(0xFF000000), onSurface = Color.White,
+    surfaceVariant = Color(0xFF202020), onSurfaceVariant = Color.White,
+    outline = Color.White, outlineVariant = Color(0xFFCCCCCC),
+    error = Color(0xFFFF8080), onError = Color.Black
+)
+
+
 // ============================================================
 // THEME PREFERENCE
 // ============================================================
 
 private const val THEME_PREFS = "gzu_voting_preferences"
 private const val THEME_KEY = "theme_mode"
+private const val LARGE_TEXT_KEY = "accessibility_large_text"
+private const val HIGH_CONTRAST_KEY = "accessibility_high_contrast"
+private const val PRIVACY_MODE_KEY = "accessibility_privacy_mode"
+
+private fun loadAccessibilityPreference(context: Context, key: String, default: Boolean = false): Boolean =
+    context.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE).getBoolean(key, default)
+
+private fun saveAccessibilityPreference(context: Context, key: String, value: Boolean) {
+    context.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE).edit().putBoolean(key, value).apply()
+}
 
 
 private fun loadThemeMode(context: Context): ThemeMode {
@@ -274,174 +318,188 @@ fun VotingApp() {
         )
     }
 
-    val darkTheme =
-        when (themeMode) {
+    val darkTheme = when (themeMode) {
+        ThemeMode.SYSTEM -> systemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    var largeText by remember { mutableStateOf(loadAccessibilityPreference(context, LARGE_TEXT_KEY)) }
+    var highContrast by remember { mutableStateOf(loadAccessibilityPreference(context, HIGH_CONTRAST_KEY)) }
+    var privacyMode by remember { mutableStateOf(loadAccessibilityPreference(context, PRIVACY_MODE_KEY, true)) }
+    val baseDensity = LocalDensity.current
 
-            ThemeMode.SYSTEM ->
-                systemDark
-
-            ThemeMode.LIGHT ->
-                false
-
-            ThemeMode.DARK ->
-                true
-        }
-
-    MaterialTheme(
-        colorScheme =
-            if (darkTheme) {
-                GzuDarkColorScheme
-            } else {
-                GzuLightColorScheme
-            }
+    CompositionLocalProvider(
+        LocalDensity provides androidx.compose.ui.unit.Density(
+            baseDensity.density,
+            baseDensity.fontScale * if (largeText) 1.25f else 1f
+        )
     ) {
+        MaterialTheme(
+            colorScheme = when {
+                highContrast && darkTheme -> GzuHighContrastDark
+                highContrast -> GzuHighContrastLight
+                darkTheme -> GzuDarkColorScheme
+                else -> GzuLightColorScheme
+            }
+        ) {
 
-        var currentScreen by remember {
-            mutableStateOf("welcome")
-        }
+            var currentScreen by remember {
+                mutableStateOf("welcome")
+            }
 
-        var studentId by remember {
-            mutableStateOf("")
-        }
+            var studentId by remember {
+                mutableStateOf("")
+            }
 
-        var institutionalFullName by remember {
-            mutableStateOf("")
-        }
+            var institutionalFullName by remember {
+                mutableStateOf("")
+            }
 
-        var selectedElectionId by remember {
-            mutableStateOf(0)
-        }
+            var selectedElectionId by remember {
+                mutableStateOf(0)
+            }
 
-        if (currentScreen == "welcome") {
+            if (currentScreen == "welcome") {
 
-            WelcomeScreen(
-                onGetStarted = {
-                    currentScreen = "login"
-                },
+                WelcomeScreen(
+                    onGetStarted = {
+                        currentScreen = "login"
+                    },
 
-                onExit = {
-                    (context as? ComponentActivity)?.finish()
-                }
-            )
+                    onExit = {
+                        (context as? ComponentActivity)?.finish()
+                    }
+                )
 
-        } else if (currentScreen == "login") {
+            } else if (currentScreen == "login") {
 
-            LoginScreen(
-                onBack = {
-                    currentScreen = "welcome"
-                },
+                LoginScreen(
+                    onBack = {
+                        currentScreen = "welcome"
+                    },
 
-                onLoginSuccess = { registrationNumber, verifiedFullName ->
+                    onLoginSuccess = { registrationNumber, verifiedFullName ->
 
-                    studentId = registrationNumber
-                    institutionalFullName = verifiedFullName.trim()
+                        studentId = registrationNumber
+                        institutionalFullName = verifiedFullName.trim()
 
-                    currentScreen =
-                        "dashboard"
-                }
-            )
+                        currentScreen =
+                            "dashboard"
+                    }
+                )
 
-        } else if (currentScreen == "dashboard") {
+            } else if (currentScreen == "dashboard") {
 
-            StudentDashboardScreen(
+                StudentDashboardScreen(
 
-                studentId =
-                    studentId,
-
-                themeMode =
-                    themeMode,
-
-                onThemeChange = { newMode ->
+                    studentId =
+                        studentId,
 
                     themeMode =
-                        newMode
+                        themeMode,
 
-                    saveThemeMode(
-                        context,
-                        newMode
-                    )
-                },
+                    onThemeChange = { newMode ->
+                        themeMode = newMode
+                        saveThemeMode(context, newMode)
+                    },
+                    largeText = largeText,
+                    highContrast = highContrast,
+                    privacyMode = privacyMode,
+                    onLargeTextChange = { enabled ->
+                        largeText = enabled
+                        saveAccessibilityPreference(context, LARGE_TEXT_KEY, enabled)
+                    },
+                    onHighContrastChange = { enabled ->
+                        highContrast = enabled
+                        saveAccessibilityPreference(context, HIGH_CONTRAST_KEY, enabled)
+                    },
+                    onPrivacyModeChange = { enabled ->
+                        privacyMode = enabled
+                        saveAccessibilityPreference(context, PRIVACY_MODE_KEY, enabled)
+                    },
 
-                onVote = { electionId ->
+                    onVote = { electionId ->
 
-                    selectedElectionId =
-                        electionId
+                        selectedElectionId =
+                            electionId
 
-                    currentScreen =
-                        "voting"
-                },
+                        currentScreen =
+                            "voting"
+                    },
 
-                onResults = { electionId ->
+                    onResults = { electionId ->
 
-                    selectedElectionId =
-                        electionId
+                        selectedElectionId =
+                            electionId
 
-                    currentScreen =
-                        "results"
-                },
+                        currentScreen =
+                            "results"
+                    },
 
-                onNominate = { currentScreen = "nomination" },
-                onMyNominations = { currentScreen = "my_nominations" },
+                    onNominate = { currentScreen = "nomination" },
+                    onMyNominations = { currentScreen = "my_nominations" },
 
-                onLogout = {
+                    onLogout = {
 
-                    studentId = ""
-                    institutionalFullName = ""
+                        studentId = ""
+                        institutionalFullName = ""
 
-                    selectedElectionId = 0
+                        selectedElectionId = 0
 
-                    currentScreen =
-                        "welcome"
-                }
-            )
+                        currentScreen =
+                            "welcome"
+                    }
+                )
 
-        } else if (currentScreen == "nomination") {
-            NominationScreen(
-                studentId = studentId,
-                fullName = institutionalFullName,
-                onBack = { currentScreen = "dashboard" }
-            )
-        } else if (currentScreen == "my_nominations") {
-            MyNominationsScreen(
-                studentId = studentId,
-                onBack = { currentScreen = "dashboard" }
-            )
-        } else if (currentScreen == "voting") {
+            } else if (currentScreen == "nomination") {
+                NominationScreen(
+                    studentId = studentId,
+                    fullName = institutionalFullName,
+                    onBack = { currentScreen = "dashboard" }
+                )
+            } else if (currentScreen == "my_nominations") {
+                MyNominationsScreen(
+                    studentId = studentId,
+                    onBack = { currentScreen = "dashboard" }
+                )
+            } else if (currentScreen == "voting") {
 
-            VotingScreen(
+                VotingScreen(
 
-                studentId =
-                    studentId,
+                    studentId =
+                        studentId,
 
-                electionId =
-                    selectedElectionId,
+                    electionId =
+                        selectedElectionId,
+                    privacyMode = privacyMode,
 
-                onBack = {
-                    currentScreen =
-                        "dashboard"
-                },
+                    onBack = {
+                        currentScreen =
+                            "dashboard"
+                    },
 
-                onViewResults = {
-                    currentScreen =
-                        "results"
-                }
-            )
+                    onViewResults = {
+                        currentScreen =
+                            "results"
+                    }
+                )
 
-        } else if (currentScreen == "results") {
+            } else if (currentScreen == "results") {
 
-            LiveResultsScreen(
+                LiveResultsScreen(
 
-                electionId =
-                    selectedElectionId,
+                    electionId =
+                        selectedElectionId,
 
-                onBack = {
-                    currentScreen =
-                        "dashboard"
-                }
-            )
+                    onBack = {
+                        currentScreen =
+                            "dashboard"
+                    }
+                )
+            }
         }
-    }
-}
+    } // MaterialTheme
+} // CompositionLocalProvider
 
 
 // ============================================================
@@ -1576,6 +1634,12 @@ fun StudentDashboardScreen(
     studentId: String,
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    largeText: Boolean,
+    highContrast: Boolean,
+    privacyMode: Boolean,
+    onLargeTextChange: (Boolean) -> Unit,
+    onHighContrastChange: (Boolean) -> Unit,
+    onPrivacyModeChange: (Boolean) -> Unit,
     onVote: (Int) -> Unit,
     onResults: (Int) -> Unit,
     onNominate: () -> Unit,
@@ -1590,6 +1654,7 @@ fun StudentDashboardScreen(
     var isRefreshing by remember { mutableStateOf(false) }
     var showAppearanceDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showAccessibilityDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun loadElections() {
@@ -1758,11 +1823,55 @@ fun StudentDashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     ) { Text("Appearance") }
+                    OutlinedButton(
+                        onClick = { showSettingsDialog = false; showAccessibilityDialog = true },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Open accessibility settings" },
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("Accessibility settings") }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showSettingsDialog = false }) { Text("CLOSE") }
             }
+        )
+    }
+
+    if (showAccessibilityDialog) {
+        AlertDialog(
+            onDismissRequest = { showAccessibilityDialog = false },
+            title = { Text("Accessibility settings", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("These settings are saved on this device. TalkBack can be enabled in Android Settings.")
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Larger text", fontWeight = FontWeight.SemiBold)
+                            Text("Increase app text size by 25%.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = largeText, onCheckedChange = onLargeTextChange,
+                            modifier = Modifier.semantics { contentDescription = "Larger text, ${if (largeText) "on" else "off"}" })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("High contrast", fontWeight = FontWeight.SemiBold)
+                            Text("Use stronger foreground and background contrast.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = highContrast, onCheckedChange = onHighContrastChange,
+                            modifier = Modifier.semantics { contentDescription = "High contrast, ${if (highContrast) "on" else "off"}" })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Private ballot review", fontWeight = FontWeight.SemiBold)
+                            Text("Hide candidate names on the review screen until you choose to reveal them.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = privacyMode, onCheckedChange = onPrivacyModeChange,
+                            modifier = Modifier.semantics { contentDescription = "Private ballot review, ${if (privacyMode) "on" else "off"}" })
+                    }
+                    Text("For screen reading, turn on TalkBack in Android Settings → Accessibility. Test voting in a private place before an official election.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAccessibilityDialog = false }) { Text("DONE") } }
         )
     }
 
@@ -2263,6 +2372,7 @@ fun ElectionCard(
 fun VotingScreen(
     studentId: String,
     electionId: Int,
+    privacyMode: Boolean = true,
     onBack: () -> Unit,
     onViewResults: () -> Unit
 ) {
@@ -2272,8 +2382,14 @@ fun VotingScreen(
     var isLoading by remember { mutableStateOf(true) }
     var isSubmitting by remember { mutableStateOf(false) }
     var showConfirmation by remember { mutableStateOf(false) }
+    var revealBallotSelections by remember { mutableStateOf(false) }
     var hasVoted by remember { mutableStateOf(false) }
     var profileCandidate by remember { mutableStateOf<Candidate?>(null) }
+    var receiptCode by remember { mutableStateOf("") }
+    var showReceiptDialog by remember { mutableStateOf(false) }
+    var receiptVerificationMessage by remember { mutableStateOf("") }
+    var isVerifyingReceipt by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(electionId, studentId) {
@@ -2340,9 +2456,23 @@ fun VotingScreen(
                 Column {
                     Text("Review your selections. Each position is submitted as one vote.")
                     Spacer(Modifier.height(10.dp))
-                    selectedByPosition.forEach { (position, candidateId) ->
-                        val candidate = candidates.firstOrNull { it.id == candidateId }
-                        Text("$position: ${candidate?.name ?: "Candidate"}", fontWeight = FontWeight.SemiBold)
+                    if (privacyMode && !revealBallotSelections) {
+                        Text("Your selected candidate names are hidden for privacy. Reveal them only when you are ready to review your ballot.")
+                        OutlinedButton(onClick = { revealBallotSelections = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Reveal selections")
+                        }
+                    } else {
+                        selectedByPosition.forEach { (position, candidateId) ->
+                            val candidate = candidates.firstOrNull { it.id == candidateId }
+                            Text(
+                                "$position: ${candidate?.name ?: "Candidate"}",
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.semantics { contentDescription = "Selected candidate for $position: ${candidate?.name ?: "Candidate"}." }
+                            )
+                        }
+                        if (privacyMode) {
+                            TextButton(onClick = { revealBallotSelections = false }) { Text("Hide selections again") }
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("Submitted votes cannot be changed.")
@@ -2375,9 +2505,16 @@ fun VotingScreen(
                                         )
                                         val response = RetrofitClient.api.castBallot(ballot)
                                         if (response.isSuccessful) {
-                                            message = "Your ballot has been submitted successfully."
+                                            val returnedReceipt = response.body()?.get("receipt_code")?.asString.orEmpty()
+                                            receiptCode = returnedReceipt
+                                            message = if (returnedReceipt.isNotBlank()) {
+                                                "Your ballot was submitted. Save your receipt code to verify the transaction status later."
+                                            } else {
+                                                "Your ballot was submitted, but the server did not return a receipt code. Contact election support before leaving this screen."
+                                            }
                                             hasVoted = true
                                             showConfirmation = false
+                                            showReceiptDialog = returnedReceipt.isNotBlank()
                                         } else {
                                             message = response.errorBody()?.string()?.take(300)
                                                 ?: "The ballot could not be submitted. Verify your status before retrying."
@@ -2407,6 +2544,67 @@ fun VotingScreen(
         )
     }
 
+    if (showReceiptDialog) {
+        AlertDialog(
+            onDismissRequest = { showReceiptDialog = false },
+            title = { Text("Your voting receipt", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Keep this code private. You can use it to check whether the blockchain transactions associated with your ballot were confirmed.")
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        receiptCode,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.semantics { contentDescription = "Your private voting receipt code: $receiptCode" }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (receiptVerificationMessage.isNotBlank()) Text(receiptVerificationMessage)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("GZU voting receipt", receiptCode))
+                    receiptVerificationMessage = "Receipt code copied. Store it safely; it is needed for verification."
+                }) { Text("Copy receipt") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        enabled = !isVerifyingReceipt,
+                        onClick = {
+                            isVerifyingReceipt = true
+                            receiptVerificationMessage = "Checking blockchain transaction status…"
+                            scope.launch {
+                                try {
+                                    val result = RetrofitClient.api.verifyVoterReceipt(receiptCode)
+                                    if (result.isSuccessful) {
+                                        val body = result.body()
+                                        val status = body?.get("status")?.asString ?: "unknown"
+                                        val detail = body?.get("message")?.asString ?: "No additional details returned."
+                                        receiptVerificationMessage = "Verification status: $status. $detail"
+                                    } else {
+                                        receiptVerificationMessage = if (result.code() == 404) {
+                                            "Receipt not found. Check that the code was copied correctly."
+                                        } else {
+                                            "Verification could not be completed (HTTP ${result.code()}). Try again later."
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                    receiptVerificationMessage = "Could not reach the verification service. Your receipt is still saved; try again when online."
+                                } finally {
+                                    isVerifyingReceipt = false
+                                }
+                            }
+                        }
+                    ) { Text(if (isVerifyingReceipt) "Checking…" else "Verify") }
+                    TextButton(onClick = { showReceiptDialog = false }) { Text("Close") }
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
@@ -2428,7 +2626,17 @@ fun VotingScreen(
             Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
             Button(onClick = onViewResults, modifier = Modifier.fillMaxWidth()) { Text("View results") }
         } else {
-            if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.error)
+            if (message.isNotBlank()) Text(
+                message,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+            )
+            Text(
+                "Accessibility: use your phone's screen reader (TalkBack) to hear candidate names, positions, selection status, and action labels. Candidate cards can be selected by double-tapping.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
+            )
             LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val positions = candidates.groupBy { it.position }.toList()
                 items(positions, key = { it.first }) { (position, positionCandidates) ->
@@ -2452,10 +2660,15 @@ fun VotingScreen(
             }
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = { showConfirmation = true },
+                onClick = { revealBallotSelections = false; showConfirmation = true },
                 enabled = selectedByPosition.isNotEmpty() && selectedByPosition.size == candidates.map { it.position }.distinct().size,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Review and submit ballot (${selectedByPosition.size} positions)") }
+            ) {
+                Text(
+                    "Review and submit ballot. ${selectedByPosition.size} of ${candidates.map { it.position }.distinct().size} positions selected",
+                    modifier = Modifier.semantics { contentDescription = "Review and submit ballot. ${selectedByPosition.size} of ${candidates.map { it.position }.distinct().size} positions selected." }
+                )
+            }
         }
         if (message.isNotBlank() && !isLoading && !hasVoted) {
             Text(message, color = if (message.contains("success", true)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
@@ -2510,6 +2723,11 @@ fun CandidateCard(
         modifier =
             Modifier
                 .fillMaxWidth()
+                .semantics(mergeDescendants = true) {
+                    contentDescription = "${candidate.name}, ${candidate.position}. ${if (selected) "Selected" else "Not selected"}. Double tap to ${if (selected) "keep selected" else "select this candidate"}."
+                    this.selected = selected
+                    this.role = Role.RadioButton
+                }
                 .border(
                     width =
                         if (selected) {

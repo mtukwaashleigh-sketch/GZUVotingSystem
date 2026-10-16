@@ -213,6 +213,20 @@ class CandidateProfile(Base):
     experience = Column(String, nullable=True)
 
 
+class VoterReceipt(Base):
+    """Receipt lookup record without plaintext voter identity or candidate choice."""
+    __tablename__ = "voter_receipts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    receipt_hash = Column(String(64), nullable=False, unique=True, index=True)
+    election_id = Column(Integer, nullable=False, index=True)
+    chain_id = Column(Integer, nullable=False, index=True)
+    # JSON array of transaction hashes; kept server-side and never returned by verify endpoint.
+    transaction_hashes = Column(String, nullable=False)
+    expected_transactions = Column(Integer, nullable=False)
+    created_at = Column(String(40), nullable=False, index=True)
+
+
 class BlockchainTransactionAudit(Base):
     """Durable searchable record of a transaction submitted by the application."""
     __tablename__ = "blockchain_transaction_audit"
