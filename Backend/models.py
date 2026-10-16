@@ -179,17 +179,6 @@ class Vote(Base):
 class CandidateNomination(Base):
     __tablename__ = "candidate_nominations"
 
-    # A person may nominate themselves only once in a given election,
-    # regardless of the position or nomination status. This constraint is
-    # also enforced in PostgreSQL by the startup migration in main.py.
-    __table_args__ = (
-        UniqueConstraint(
-            "student_id",
-            "election_id",
-            name="unique_student_election_nomination",
-        ),
-    )
-
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String, nullable=False, index=True)
     election_id = Column(Integer, nullable=False, index=True)
@@ -222,6 +211,20 @@ class CandidateProfile(Base):
     year_of_study = Column(String, nullable=True)
     manifesto = Column(String, nullable=True)
     experience = Column(String, nullable=True)
+
+
+class VoterReceipt(Base):
+    """Receipt lookup record without plaintext voter identity or candidate choice."""
+    __tablename__ = "voter_receipts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    receipt_hash = Column(String(64), nullable=False, unique=True, index=True)
+    election_id = Column(Integer, nullable=False, index=True)
+    chain_id = Column(Integer, nullable=False, index=True)
+    # JSON array of transaction hashes; kept server-side and never returned by verify endpoint.
+    transaction_hashes = Column(String, nullable=False)
+    expected_transactions = Column(Integer, nullable=False)
+    created_at = Column(String(40), nullable=False, index=True)
 
 
 class BlockchainTransactionAudit(Base):
