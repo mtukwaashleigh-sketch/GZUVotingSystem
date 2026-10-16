@@ -51,6 +51,11 @@ interface VotingApi {
     @GET("elections")
     suspend fun getElections(): Response<List<Election>>
 
+    @GET("elections/{election_id}/positions")
+    suspend fun getElectionPositions(
+        @Path("election_id") electionId: Int
+    ): Response<ElectionPositionsResponse>
+
     @GET("elections/{election_id}/candidates")
     suspend fun getCandidates(
         @Path("election_id") electionId: Int

@@ -50,6 +50,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -3130,7 +3132,10 @@ fun NominationScreen(studentId: String, fullName: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var elections by remember { mutableStateOf<List<zw.ac.gzu.voting.api.Election>>(emptyList()) }
     var selectedElection by remember { mutableStateOf<zw.ac.gzu.voting.api.Election?>(null) }
-    var position by remember { mutableStateOf("President") }
+    var position by remember { mutableStateOf("") }
+    var availablePositions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var positionMenuExpanded by remember { mutableStateOf(false) }
+    var positionsLoading by remember { mutableStateOf(false) }
     var faculty by remember { mutableStateOf("") }
     var department by remember { mutableStateOf("") }
     var programme by remember { mutableStateOf("") }
@@ -3156,11 +3161,50 @@ fun NominationScreen(studentId: String, fullName: String, onBack: () -> Unit) {
             item { Text("Institutional ID: $studentId", fontWeight = FontWeight.Bold) }
             item { Text("Select election", fontWeight = FontWeight.SemiBold) }
             items(elections) { e ->
-                OutlinedButton(onClick = { selectedElection = e }, modifier = Modifier.fillMaxWidth(), border = BorderStroke(1.dp, if (selectedElection?.id == e.id) GzuGreen else MaterialTheme.colorScheme.outline)) {
+                OutlinedButton(onClick = {
+                    selectedElection = e
+                    position = ""
+                    availablePositions = emptyList()
+                    positionsLoading = true
+                    scope.launch {
+                        try {
+                            val response = RetrofitClient.api.getElectionPositions(e.id)
+                            if (response.isSuccessful) {
+                                availablePositions = response.body()?.positions ?: emptyList()
+                                if (availablePositions.isEmpty()) message = "No open positions have been configured for this election. Contact the election administrator."
+                            } else message = "Could not load positions for this election (${response.code()})."
+                        } catch (_: Exception) { message = "Could not load election positions. Check your connection." }
+                        finally { positionsLoading = false }
+                    }
+                }, modifier = Modifier.fillMaxWidth(), border = BorderStroke(1.dp, if (selectedElection?.id == e.id) GzuGreen else MaterialTheme.colorScheme.outline)) {
                     Text((if (selectedElection?.id == e.id) "✓  " else "") + e.title)
                 }
             }
-            item { OutlinedTextField(position, { position = it }, label = { Text("Position (e.g. President)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+            item {
+                Text("Select open position", fontWeight = FontWeight.SemiBold)
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { if (!positionsLoading && availablePositions.isNotEmpty()) positionMenuExpanded = true },
+                        enabled = selectedElection != null && !positionsLoading && availablePositions.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(when {
+                            positionsLoading -> "Loading positions…"
+                            position.isNotBlank() -> position
+                            availablePositions.isEmpty() -> "Select an election first"
+                            else -> "Choose a position ▾"
+                        })
+                    }
+                    DropdownMenu(expanded = positionMenuExpanded, onDismissRequest = { positionMenuExpanded = false }) {
+                        availablePositions.forEach { option ->
+                            DropdownMenuItem(text = { Text(option) }, onClick = {
+                                position = option
+                                positionMenuExpanded = false
+                            })
+                        }
+                    }
+                }
+            }
             item {
                 OutlinedTextField(
                     value = fullName,
@@ -3191,7 +3235,7 @@ fun NominationScreen(studentId: String, fullName: String, onBack: () -> Unit) {
                 photoUri?.let { Text("Selected image: ${it.lastPathSegment ?: "photo"}", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             item {
-                Button(enabled = !loading && selectedElection != null && faculty.isNotBlank() && department.isNotBlank() && programme.isNotBlank() && manifesto.isNotBlank() && photoUri != null,
+                Button(enabled = !loading && selectedElection != null && position.isNotBlank() && faculty.isNotBlank() && department.isNotBlank() && programme.isNotBlank() && manifesto.isNotBlank() && photoUri != null,
                     onClick = {
                         scope.launch {
                             loading = true; message = ""

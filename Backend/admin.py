@@ -1,5 +1,7 @@
 from database import SessionLocal
 import secrets
+import re
+import json
 from fastapi import APIRouter, Depends, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -2946,6 +2948,19 @@ def create_election_page(
                 placeholder="Provide a concise description of the election and its purpose..."
             ></textarea>
 
+            <label>
+                Open Positions for Nomination
+            </label>
+            <textarea
+                name="open_positions"
+                placeholder="Enter one position per line, e.g.
+President
+Vice President
+Secretary
+Treasurer"
+                required
+            ></textarea>
+            <p class="form-description">Enter each position on a separate line. Students will select from these positions in the nomination form.</p>
 
             <div class="form-actions">
 
@@ -2995,13 +3010,21 @@ def create_election_page(
 def create_election(
     request: Request,
     title: str = Form(...),
-    description: str = Form("")
+    description: str = Form(""),
+    open_positions: str = Form("")
 ):
     db = get_db()
 
     try:
         title = title.strip()
         description = description.strip()
+        position_values = []
+        seen_positions = set()
+        for raw_position in re.split(r"[\n,;]+", open_positions or ""):
+            position = " ".join(raw_position.strip().split())
+            if position and position.casefold() not in seen_positions:
+                seen_positions.add(position.casefold())
+                position_values.append(position)
 
         if not title:
             set_flash(
@@ -3012,6 +3035,10 @@ def create_election(
                 "/admin/elections/create",
                 status_code=303
             )
+
+        if not position_values:
+            set_flash(request, "Enter at least one open position, one per line.")
+            return RedirectResponse("/admin/elections/create", status_code=303)
 
         from blockchain import create_election_on_blockchain
 
@@ -3076,6 +3103,7 @@ def create_election(
         election = Election(
             title=title,
             description=description,
+            open_positions=json.dumps(position_values, ensure_ascii=False),
             status="upcoming",
             blockchain_election_id=blockchain_election_id
         )

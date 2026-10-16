@@ -112,6 +112,16 @@ except Exception as migration_error:
     ) from migration_error
 
 
+# Add election open_positions without dropping existing election data.
+try:
+    election_columns = {column["name"] for column in inspect(engine).get_columns("elections")}
+    if "open_positions" not in election_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE elections ADD COLUMN open_positions VARCHAR NOT NULL DEFAULT '[]'"))
+except Exception as migration_error:
+    raise RuntimeError("Could not apply elections.open_positions migration. Check database permissions and schema.") from migration_error
+
+
 # ============================================================
 # FASTAPI APPLICATION
 # ============================================================
@@ -690,6 +700,29 @@ def get_candidates(
 
 # ============================================================
 # ============================================================
+# OPEN NOMINATION POSITIONS
+# ============================================================
+
+@app.get("/elections/{election_id}/positions")
+def get_election_positions(election_id: int, db: Session = Depends(get_db)):
+    election = db.query(Election).filter(Election.id == election_id, Election.is_deleted == False).first()
+    if not election:
+        raise HTTPException(status_code=404, detail="Election not found.")
+    try:
+        configured = json.loads(election.open_positions or "[]")
+        if not isinstance(configured, list):
+            configured = []
+    except (TypeError, ValueError):
+        configured = []
+    positions = [" ".join(str(value).split()) for value in configured if str(value).strip()]
+    if not positions:
+        # Backwards compatibility for elections created before open positions existed.
+        positions = [row[0] for row in db.query(Candidate.position).filter(
+            Candidate.election_id == election_id
+        ).distinct().order_by(Candidate.position).all() if row[0]]
+    return {"election_id": election_id, "positions": positions}
+
+
 # CANDIDATE NOMINATIONS AND PROFILES
 # ============================================================
 
@@ -728,6 +761,20 @@ async def submit_candidate_nomination(
         raise HTTPException(status_code=404, detail="Election not found.")
     if election.status != "upcoming":
         raise HTTPException(status_code=400, detail="Nominations can only be submitted for an upcoming election.")
+
+    try:
+        configured_positions = json.loads(election.open_positions or "[]")
+        if not isinstance(configured_positions, list):
+            configured_positions = []
+    except (TypeError, ValueError):
+        configured_positions = []
+    allowed_positions = {" ".join(str(value).split()).casefold(): " ".join(str(value).split())
+                         for value in configured_positions if str(value).strip()}
+    requested_position = " ".join(position.split())
+    if allowed_positions and requested_position.casefold() not in allowed_positions:
+        raise HTTPException(status_code=400, detail="Select a position configured for this election.")
+    if allowed_positions:
+        position = allowed_positions[requested_position.casefold()]
 
     student_id = " ".join(student_id.strip().upper().split())
     identity = (

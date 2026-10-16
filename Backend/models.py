@@ -61,6 +61,9 @@ class Election(Base):
         String
     )
 
+    # JSON-encoded list of positions open for nominations in this election.
+    open_positions = Column(String, nullable=False, default="[]", server_default="[]")
+
     status = Column(
         String,
         default="upcoming"
