@@ -1894,22 +1894,6 @@ fun StudentDashboardScreen(
                     Text("View elections and make your voice count.",
                         fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(16.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                    ) {
-                        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("AI Election Assistant", fontSize = 18.sp, fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Text("Get guidance on voting procedures, election information, nominations, vote receipts, and blockchain verification.",
-                                fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Button(onClick = onAssistant, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)) {
-                                Text("Open AI Election Assistant")
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(22.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -1962,7 +1946,19 @@ fun StudentDashboardScreen(
             }
         }
 
-        // Settings stays in a familiar bottom-corner floating button.
+        // Assistant shortcut sits directly above Settings in the bottom-right corner.
+        androidx.compose.material3.FloatingActionButton(
+            onClick = onAssistant,
+            modifier = Modifier.align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(end = 20.dp, bottom = 88.dp),
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+        ) {
+            Text("AI", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+
+        // Settings stays in the bottom-right corner, below the AI shortcut.
         androidx.compose.material3.FloatingActionButton(
             onClick = { showSettingsDialog = true },
             modifier = Modifier.align(Alignment.BottomEnd)

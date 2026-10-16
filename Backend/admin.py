@@ -170,46 +170,22 @@ def page_template(
             line-height: 1.5;
         }}
 
-        a {{
-            text-decoration: underline;
-            text-underline-offset: 0.15em;
+        /* Keep all interface text free of underlines, including interactive states. */
+        *,
+        *::before,
+        *::after {{
+            text-decoration: none !important;
         }}
 
-        /* Keyboard, low-vision and motion accessibility */
-        :focus-visible {{
-            outline: 3px solid #ffbf47 !important;
-            outline-offset: 3px;
-            border-radius: 3px;
-        }}
-
-        .skip-link {{
-            position: absolute;
-            left: 12px;
-            top: -100px;
-            z-index: 3000;
-            padding: 12px 16px;
-            background: #ffffff;
-            color: #111827;
-            border: 2px solid #111827;
-            border-radius: 6px;
-            font-weight: 700;
-        }}
-
-        .skip-link:focus {{ top: 12px; }}
-
-        @media (prefers-reduced-motion: reduce) {{
-            *, *::before, *::after {{
-                scroll-behavior: auto !important;
-                animation-duration: 0.01ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: 0.01ms !important;
-            }}
-        }}
-
-        @media (forced-colors: active) {{
-            button, a, input, select, textarea {{
-                border: 1px solid ButtonText;
-            }}
+        a,
+        a:hover,
+        a:focus,
+        a:active,
+        button,
+        button:hover,
+        button:focus,
+        button:active {{
+            text-decoration: none !important;
         }}
 
 
@@ -1618,7 +1594,6 @@ def page_template(
 
 
 <body>
-    <a class="skip-link" href="#main-content">Skip to main content</a>
 
 
 <!-- ========================================================
@@ -1765,7 +1740,7 @@ def page_template(
      MAIN
      ======================================================== -->
 
-<main id="main-content" class="main">
+<main class="main">
 
 
     <header class="topbar">
@@ -1939,8 +1914,7 @@ def admin_dashboard(
                 </h2>
 
                 <p>
-                    Monitor and manage the GZU institutional
-                    election system.
+                    Monitor election activity and access the core functions of the GZU institutional election management system.
                 </p>
 
             </div>
@@ -2062,7 +2036,7 @@ def admin_dashboard(
                         </h3>
 
                         <p>
-                            Create and manage eligible institutional voters.
+                            Manage registered students and employees who are eligible to participate in institutional elections.
                         </p>
 
                         <a
@@ -2086,7 +2060,7 @@ def admin_dashboard(
                         </h3>
 
                         <p>
-                            Create, start and manage institutional elections.
+                            Create, configure, and manage institutional elections throughout their lifecycle.
                         </p>
 
                         <a
@@ -2110,8 +2084,7 @@ def admin_dashboard(
                         </h3>
 
                         <p>
-                            Add and manage election
-                            candidates.
+                            Manage candidate records and their participation in institutional elections.
                         </p>
 
                         <a
@@ -2169,7 +2142,7 @@ def admin_dashboard(
 
                 <p>
                     <strong>Platform:</strong>
-                    GZU GZU Election Management System
+                    GZU Election Management System
                 </p>
 
                 <p>
@@ -2743,7 +2716,7 @@ def election_management(
                     {safe(
                         election.description
                         or
-                        "No description provided."
+                        "No election description has been provided."
                     )}
 
                 </div>
@@ -2778,7 +2751,7 @@ def election_management(
                 </h2>
 
                 <p>
-                    Create and manage GZU institutional elections.
+                    Create, configure, and administer Great Zimbabwe University elections.
                 </p>
 
             </div>
@@ -2928,7 +2901,7 @@ def create_election_page(
             </h2>
 
             <p>
-                Create a new institutional election.
+                Configure a new institutional election and provide the information required for its administration.
             </p>
 
         </div>
@@ -2943,8 +2916,7 @@ def create_election_page(
         </h2>
 
         <p class="form-description">
-            The election will be created in the
-            database and blockchain.
+            The election details will be recorded in the system database and submitted to the configured blockchain workflow.
         </p>
 
 
@@ -2971,7 +2943,7 @@ def create_election_page(
 
             <textarea
                 name="description"
-                placeholder="Enter election description..."
+                placeholder="Provide a concise description of the election and its purpose..."
             ></textarea>
 
 
@@ -3375,7 +3347,7 @@ def manage_election(
                     {safe(
                         election.description
                         or
-                        "No description provided."
+                        "No election description has been provided."
                     )}
                 </p>
 
@@ -4027,7 +3999,7 @@ def create_candidate_page(
                 </h2>
 
                 <p>
-                    Candidates are registered from approved nominations.
+                    Candidates are added to an election after their nominations have been approved.
                 </p>
 
             </div>
@@ -4042,8 +4014,7 @@ def create_candidate_page(
             </h2>
 
             <p class="form-description">
-                The candidate will be linked to the
-                blockchain election.
+                The candidate record will be associated with the selected election and its corresponding blockchain record, where supported.
             </p>
 
 
@@ -4775,7 +4746,7 @@ def admin_nominations(
         <div class="page-heading nominations-page-heading">
           <div>
             <h1>Candidate Nominations</h1>
-            <p>Review nominee details and candidate photos.</p>
+            <p>Review nomination details and candidate photographs before making an approval decision.</p>
           </div>
         </div>
         <div class="card" style="margin-bottom:20px;padding:24px 28px;">

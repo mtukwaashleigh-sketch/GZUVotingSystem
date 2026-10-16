@@ -752,27 +752,14 @@ async def submit_candidate_nomination(
     nominator.full_name = linked_name
     nominator.identity_type = identity.identity_type
 
-    # Enforce one nomination per student for the entire election, not one per
-    # position. Every existing submission counts, including rejected nominations
-    # and nominations returned for corrections; changing the position cannot be
-    # used to submit a second nomination for the same election.
-    duplicate = (
-        db.query(CandidateNomination.id)
-        .filter(
-            CandidateNomination.student_id == student_id,
-            CandidateNomination.election_id == election_id,
-        )
-        .first()
-    )
+    duplicate = db.query(CandidateNomination).filter(
+        CandidateNomination.student_id == student_id,
+        CandidateNomination.election_id == election_id,
+        CandidateNomination.position == position.strip(),
+        CandidateNomination.status.in_(["pending", "approved"])
+    ).first()
     if duplicate:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "You have already submitted a nomination for this election. "
-                "Only one nomination for one position per student is permitted "
-                "in each election."
-            ),
-        )
+        raise HTTPException(status_code=409, detail="You already have a pending or approved nomination for this position.")
 
     content_type = (photo.content_type or "").lower()
     if content_type not in ("image/jpeg", "image/png", "image/webp"):
@@ -1531,10 +1518,6 @@ def get_election_results(
     }
 
 
-# ============================================================
-# UPDATE ELECTION STATUS
-# ============================================================
-
 
 # ============================================================
 # PUBLIC ELECTION VERIFICATION PORTAL
@@ -1755,33 +1738,42 @@ STRICT PERMISSIONS:
 - Keep answers concise, accessible, neutral, and in plain English."""
 
 
-def _assistant_fallback_answer(message: str) -> str:
-    """Safe, local FAQ mode used when no AI provider key is configured."""
-    q = message.casefold()
+def _assistant_fallback_answer(message: str, public_context=None) -> str:
+    """Safe local answers for common questions when the AI provider is unavailable."""
+    q = " ".join(message.casefold().split())
+    elections = public_context or []
+
+    if any(term in q for term in ("ongoing election", "ongoing elections", "elections ongoing", "current election", "current elections", "active election", "active elections", "which elections", "what elections", "any elections", "election now", "elections now")):
+        ongoing = [e for e in elections if str(e.get("status", "")).casefold() in {"ongoing", "active", "open"}]
+        if ongoing:
+            return "The following elections are currently marked as ongoing in the voting system:\n" + "\n".join(
+                f"• {e.get('title', 'Untitled election')} (Election ID: {e.get('election_id')})" for e in ongoing
+            )
+        if elections:
+            return "There are no elections currently marked as ongoing in the voting system. Here are the public election records and their current recorded statuses:\n" + "\n".join(
+                f"• {e.get('title', 'Untitled election')} — {str(e.get('status', 'unknown')).title()}" for e in elections[:15]
+            )
+        return "I could not retrieve public election records. Please refresh the election list or contact the GZU election administrator."
+
+    if any(term in q for term in ("voting procedure", "voting process", "how do i vote", "how to vote", "cast a vote", "cast my vote", "how can i vote", "vote step", "voting steps", "ballot")):
+        return ("To vote in the GZU Voting System: (1) sign in using the official app, (2) open an election marked Ongoing, (3) review the candidates and position, (4) select your choice and carefully review it, (5) submit your vote once, and (6) follow the confirmation/receipt instructions shown by the app. Do not share your password or receipt code. If an election is not marked Ongoing or voting is unavailable, contact the GZU election administrator. Exact screens may vary by app version.")
     if any(term in q for term in ("verify election", "verification portal", "blockchain verification", "check election")):
-        return ("Open the Public Election Verification Portal at /public/verify, choose an election, and select ‘Verify this election’. "
-                "It checks whether the database election and candidate records match the configured blockchain. Final totals are shown only after an election is closed. "
-                "A successful check is not a complete independent audit.")
+        return ("Open the Public Election Verification Portal at /public/verify, choose an election, and select ‘Verify this election’. It checks whether public election and candidate records match the configured blockchain. A successful consistency check is not a complete independent audit.")
     if any(term in q for term in ("receipt", "receipt code", "transaction confirmed")):
-        return ("Use /verify-receipt to check a receipt. Keep the receipt code private: do not paste it into this chat or share it with anyone. "
-                "Receipt verification checks transaction status; it does not reveal your ballot or prove the final tally is correct.")
-    if any(term in q for term in ("vote", "ballot", "cast my", "submit my")):
-        return ("I can explain general steps, but I cannot cast, change, or submit a vote for you. Use the official GZU voting app, review your selections carefully, and follow the instructions shown there. "
-                "Never share your password, student/staff ID, or receipt code in this chat.")
+        return ("Use /verify-receipt to check a receipt. Keep the receipt code private: do not paste it into this chat or share it with anyone. Receipt verification checks transaction status; it does not reveal your ballot or prove the final tally is correct.")
+    if any(term in q for term in ("nomination", "nominate", "candidate", "stand for election")):
+        return ("To submit a nomination, sign in to the GZU Voting System, open the relevant election, and choose the nomination option if available. Complete the form and submit it. The system permits one nomination per student per election. The assistant cannot submit or approve nominations; check the app for current status or contact the election administrator.")
+    if any(term in q for term in ("vote", "voting", "ballot", "cast my", "submit my")):
+        return ("For voting, sign in to the official GZU Voting System, open an election marked Ongoing, review the available candidates, select your choice, and submit it using the app's instructions. Follow any confirmation or receipt shown by the app. Never share your password, student/staff ID, or receipt code in this chat.")
     if any(term in q for term in ("password", "login", "account", "locked")):
-        return ("I cannot access accounts or reset passwords. Use the official sign-in or account recovery process provided by GZU. "
-                "Do not send passwords, one-time codes, or identity documents in this chat.")
+        return ("I cannot access accounts or reset passwords. Use the official sign-in or account recovery process provided by GZU. Do not send passwords, one-time codes, or identity documents in this chat.")
     if any(term in q for term in ("result", "winner", "vote count", "tally")):
-        return ("For official results, open /public/verify and select the relevant election. Published candidate totals are displayed only after the election is closed. "
-                "If verification reports a mismatch or is unavailable, contact the election administrator; a network failure alone does not prove invalidity.")
-    if any(term in q for term in ("candidate", "nomination", "register")):
-        return ("I can explain public candidate and nomination information, but I cannot register, approve, or modify candidates. "
-                "For the authoritative status of a nomination, contact the official GZU election administrator.")
-    if any(term in q for term in ("privacy", "private", "personal data", "student id", "staff id")):
-        return ("Please do not share passwords, one-time codes, student/staff IDs, private receipt codes, or individual ballot choices here. "
-                "This assistant cannot look up a voter's identity or voting history.")
-    return ("I can help with general GZU election procedures, election status terms, public blockchain verification, receipt verification, and privacy guidance. "
-            "I cannot access accounts, reveal individual votes, or perform election administration actions. For authoritative rules not shown in the portal, contact the GZU election administrator.")
+        return ("For official results, open /public/verify and select the relevant election. Published candidate totals are displayed only when results are published for a closed election. If verification reports a mismatch or is unavailable, contact the election administrator.")
+    if any(term in q for term in ("privacy", "private data", "personal data", "student id", "staff id")):
+        return ("Please do not share passwords, one-time codes, student/staff IDs, private receipt codes, or individual ballot choices here. This assistant cannot look up a voter's identity or voting history.")
+    if any(term in q for term in ("hello", "hi", "hey", "good morning", "good afternoon", "good evening")):
+        return "Hello! I can help with voting procedures, election status, nominations, receipts, public verification, and general questions when the AI service is connected. What would you like to know?"
+    return ("I can't generate a full AI answer right now because the AI provider is unavailable. I can still provide basic GZU voting guidance, but please try again later for other questions. The system administrator should check the backend AI API key, model name, and provider error logs.")
 
 
 def _assistant_rate_check(request: Request):
@@ -1838,7 +1830,7 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return {"answer": _assistant_fallback_answer(message), "mode": "faq_fallback",
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nAI is not configured on the server (OPENAI_API_KEY is missing).", "mode": "faq_fallback",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
     import json as _json
@@ -1858,7 +1850,7 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=18) as response:
+        with urllib.request.urlopen(req, timeout=45) as response:
             provider_data = _json.loads(response.read(1024 * 1024).decode("utf-8"))
         answer = str(provider_data["choices"][0]["message"]["content"]).strip()
         if not answer:
@@ -1867,9 +1859,11 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
         answer = answer[:4000]
         return {"answer": answer, "mode": "ai",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
-    except (urllib.error.URLError, TimeoutError, ValueError, KeyError, IndexError, TypeError) as exc:
-        # Never return provider errors, request headers, or secrets to the client.
-        return {"answer": _assistant_fallback_answer(message) + "\n\nThe AI service is currently unavailable, so this response uses the local help guide.",
+    except Exception as exc:
+        # Log diagnostic category server-side only; never expose API keys or provider response bodies.
+        import logging
+        logging.getLogger("gzu.assistant").exception("AI provider request failed (%s)", type(exc).__name__)
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is currently unavailable, so this response uses the local help guide.",
                 "mode": "faq_fallback",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
@@ -1877,7 +1871,6 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
 # ============================================================
 # UPDATE ELECTION STATUS
 # ============================================================
-
 
 @app.put("/elections/{election_id}/status")
 def update_election_status(
