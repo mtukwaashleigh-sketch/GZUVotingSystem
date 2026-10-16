@@ -1,5 +1,6 @@
 package zw.ac.gzu.voting
 
+import com.google.gson.JsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import android.content.Context
@@ -7,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.ClipData
 import android.net.Uri
 import android.os.Bundle
+import android.view.WindowManager
 import android.util.Base64
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -34,6 +36,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,6 +48,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -89,6 +93,8 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -293,8 +299,14 @@ class MainActivity : ComponentActivity() {
 
         super.onCreate(savedInstanceState)
 
+        // Resize every screen when the software keyboard opens. The root imePadding
+        // below keeps forms and text fields visible above the keyboard throughout the app.
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
         setContent {
-            VotingApp()
+            Box(modifier = Modifier.fillMaxSize().imePadding()) {
+                VotingApp()
+            }
         }
     }
 }
@@ -438,6 +450,7 @@ fun VotingApp() {
 
                     onNominate = { currentScreen = "nomination" },
                     onMyNominations = { currentScreen = "my_nominations" },
+                    onAssistant = { currentScreen = "assistant" },
 
                     onLogout = {
 
@@ -451,6 +464,10 @@ fun VotingApp() {
                     }
                 )
 
+            } else if (currentScreen == "assistant") {
+                ElectionAssistantScreen(
+                    onBack = { currentScreen = "dashboard" }
+                )
             } else if (currentScreen == "nomination") {
                 NominationScreen(
                     studentId = studentId,
@@ -500,6 +517,147 @@ fun VotingApp() {
         }
     } // MaterialTheme
 } // CompositionLocalProvider
+
+
+// ============================================================
+// AI ELECTION ASSISTANT
+// ============================================================
+
+@Composable
+fun ElectionAssistantScreen(onBack: () -> Unit) {
+    data class ChatMessage(val text: String, val fromUser: Boolean)
+    var messages by remember {
+        mutableStateOf(listOf(ChatMessage(
+            "Welcome to the GZU AI Election Assistant. Ask a question about voting procedures, election information, nominations, vote receipts, or blockchain verification.",
+            false
+        )))
+    }
+    var input by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    fun sendQuestion(question: String) {
+        val cleaned = question.trim()
+        if (cleaned.isEmpty() || sending) return
+        messages = messages + ChatMessage(cleaned, true)
+        input = ""
+        keyboardController?.hide()
+        sending = true
+        status = "Preparing a response…"
+        scope.launch {
+            try {
+                val payload = JsonObject().apply { addProperty("message", cleaned) }
+                val response = RetrofitClient.api.askElectionAssistant(payload)
+                if (response.isSuccessful) {
+                    val body = response.body()
+                    val answer = body?.get("answer")?.asString
+                        ?: "The assistant could not prepare a response. Please try again."
+                    messages = messages + ChatMessage(answer, false)
+                    status = if (body?.get("mode")?.asString == "faq_fallback") {
+                        "The assistant is using its built-in guidance because the AI service is unavailable."
+                    } else ""
+                } else {
+                    val detail = try { response.errorBody()?.string().orEmpty() } catch (_: Exception) { "" }
+                    messages = messages + ChatMessage(
+                        if (detail.isNotBlank()) "The assistant could not process your question. Please try again later." else "The assistant is temporarily unavailable. Please try again later.",
+                        false
+                    )
+                    status = "Request failed (${response.code()})."
+                }
+            } catch (_: Exception) {
+                messages = messages + ChatMessage(
+                    "Unable to connect to the election assistant. Check your connection and try again.", false
+                )
+                status = "Connection unavailable."
+            } finally {
+                sending = false
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            TextButton(onClick = onBack) { Text("Back") }
+            Column(Modifier.weight(1f)) {
+                Text("AI Election Assistant", fontSize = 21.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground)
+                Text("GZU Voting System support", fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        LazyColumn(
+            state = chatListState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
+        ) {
+            items(messages) { message ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(0.88f),
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (message.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            message.text,
+                            modifier = Modifier.padding(13.dp),
+                            color = if (message.fromUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+            if (sending) {
+                item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Preparing a response…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                } }
+            }
+        }
+        LaunchedEffect(messages.size, sending) {
+            if (messages.isNotEmpty()) chatListState.animateScrollToItem(messages.size - 1)
+        }
+        if (status.isNotBlank()) {
+            Text(status, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { if (it.length <= 1200) input = it },
+                modifier = Modifier.weight(1f),
+                enabled = !sending,
+                placeholder = { Text("Ask an election question") },
+                maxLines = 4,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = { if (!sending && input.isNotBlank()) sendQuestion(input) }
+                ),
+                shape = RoundedCornerShape(12.dp)
+            )
+            Button(onClick = { sendQuestion(input) }, enabled = !sending && input.isNotBlank(),
+                shape = RoundedCornerShape(12.dp)) { Text("Send") }
+        }
+        Text(
+            "Do not enter passwords or private voter information. The assistant provides guidance and cannot cast votes or manage elections.",
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
 
 
 // ============================================================
@@ -1644,6 +1802,7 @@ fun StudentDashboardScreen(
     onResults: (Int) -> Unit,
     onNominate: () -> Unit,
     onMyNominations: () -> Unit,
+    onAssistant: () -> Unit,
     onLogout: () -> Unit
 ) {
     var elections by remember {
@@ -1734,6 +1893,22 @@ fun StudentDashboardScreen(
                     Spacer(Modifier.height(7.dp))
                     Text("View elections and make your voice count.",
                         fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("AI Election Assistant", fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Text("Get guidance on voting procedures, election information, nominations, vote receipts, and blockchain verification.",
+                                fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Button(onClick = onAssistant, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)) {
+                                Text("Open AI Election Assistant")
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(22.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),

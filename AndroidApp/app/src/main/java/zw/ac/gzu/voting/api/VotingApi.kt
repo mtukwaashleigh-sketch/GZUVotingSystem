@@ -16,6 +16,11 @@ import retrofit2.http.Body
 
 interface VotingApi {
 
+    @POST("api/public/assistant/chat")
+    suspend fun askElectionAssistant(
+        @Body payload: JsonObject
+    ): Response<JsonObject>
+
     @POST("login")
     suspend fun login(
         @Query("email") email: String,
