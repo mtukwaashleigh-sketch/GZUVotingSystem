@@ -1776,6 +1776,58 @@ def _assistant_fallback_answer(message: str, public_context=None) -> str:
     return ("I can't generate a full AI answer right now because the AI provider is unavailable. I can still provide basic GZU voting guidance, but please try again later for other questions. The system administrator should check the backend AI API key, model name, and provider error logs.")
 
 
+# Cache successful AI answers briefly so repeated questions do not consume another API call.
+_ASSISTANT_CACHE = {}
+_ASSISTANT_CACHE_LOCK = threading.Lock()
+_ASSISTANT_CACHE_TTL_SECONDS = 300
+_ASSISTANT_CACHE_MAX_ENTRIES = 256
+
+
+def _assistant_local_answer(message: str, public_context=None):
+    """Return a useful deterministic answer for common intents, or None for AI-only questions."""
+    q = " ".join(message.casefold().split())
+    local_triggers = (
+        "ongoing election", "ongoing elections", "elections ongoing", "current election", "current elections",
+        "active election", "active elections", "which elections", "what elections", "any elections",
+        "election now", "elections now", "voting procedure", "voting process", "how do i vote", "how to vote",
+        "cast a vote", "cast my vote", "how can i vote", "vote step", "voting steps", "ballot",
+        "verify election", "verification portal", "blockchain verification", "check election",
+        "receipt", "nomination", "nominate", "candidate", "stand for election", "password", "login",
+        "account", "locked", "result", "winner", "vote count", "tally", "privacy", "private data",
+        "personal data", "student id", "staff id", "hello", "hi", "hey", "good morning", "good afternoon",
+        "good evening"
+    )
+    if any(term in q for term in local_triggers):
+        return _assistant_fallback_answer(message, public_context)
+    return None
+
+
+def _assistant_cache_get(key: str):
+    now = time.monotonic()
+    with _ASSISTANT_CACHE_LOCK:
+        entry = _ASSISTANT_CACHE.get(key)
+        if not entry:
+            return None
+        expires, answer = entry
+        if now >= expires:
+            _ASSISTANT_CACHE.pop(key, None)
+            return None
+        return answer
+
+
+def _assistant_cache_put(key: str, answer: str):
+    now = time.monotonic()
+    with _ASSISTANT_CACHE_LOCK:
+        expired = [k for k, (expires, _) in _ASSISTANT_CACHE.items() if now >= expires]
+        for k in expired:
+            _ASSISTANT_CACHE.pop(k, None)
+        if len(_ASSISTANT_CACHE) >= _ASSISTANT_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(_ASSISTANT_CACHE), None)
+            if oldest_key is not None:
+                _ASSISTANT_CACHE.pop(oldest_key, None)
+        _ASSISTANT_CACHE[key] = (now + _ASSISTANT_CACHE_TTL_SECONDS, answer)
+
+
 def _assistant_rate_check(request: Request):
     """Best-effort per-process throttling; also configure rate limits at the reverse proxy in production."""
     host = request.client.host if request.client else "unknown"
@@ -1828,6 +1880,20 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
     public_context = [{"election_id": int(e.id), "title": str(e.title or ""), "status": str(e.status or "unknown").lower()}
                       for e in public_elections]
 
+    # Answer common, documented questions locally before contacting a paid provider.
+    # This means election status, voting steps, nominations, receipts, and verification
+    # guidance continue to work even when AI quota is exhausted or the provider is down.
+    local_answer = _assistant_local_answer(message, public_context)
+    if local_answer is not None:
+        return {"answer": local_answer, "mode": "local_faq",
+                "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
+
+    cache_key = message.casefold()
+    cached_answer = _assistant_cache_get(cache_key)
+    if cached_answer is not None:
+        return {"answer": cached_answer, "mode": "ai_cached",
+                "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
+
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nAI is not configured on the server (OPENAI_API_KEY is missing).", "mode": "faq_fallback",
@@ -1857,13 +1923,29 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
             raise ValueError("Empty assistant response")
         # Defensive output-size cap. The model has no tools and cannot perform actions.
         answer = answer[:4000]
+        _assistant_cache_put(cache_key, answer)
         return {"answer": answer, "mode": "ai",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
+    except urllib.error.HTTPError as exc:
+        # Provider response bodies can identify quota vs rate-limit failures. Log only a
+        # bounded, sanitized body; never log request headers, API keys, or user secrets.
+        import logging
+        try:
+            provider_error = exc.read(2000).decode("utf-8", errors="replace")
+        except Exception:
+            provider_error = "<provider error body unavailable>"
+        provider_error = " ".join(provider_error.split())[:1500]
+        logging.getLogger("gzu.assistant").error(
+            "AI provider HTTP %s; response: %s", exc.code, provider_error
+        )
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is temporarily unavailable. Essential voting help remains available in local guidance.",
+                "mode": "faq_fallback",
+                "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
     except Exception as exc:
-        # Log diagnostic category server-side only; never expose API keys or provider response bodies.
+        # Log diagnostic category server-side only; never expose secrets to the client.
         import logging
         logging.getLogger("gzu.assistant").exception("AI provider request failed (%s)", type(exc).__name__)
-        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is currently unavailable, so this response uses the local help guide.",
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is temporarily unavailable. Essential voting help remains available in local guidance.",
                 "mode": "faq_fallback",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
