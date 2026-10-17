@@ -76,6 +76,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -357,19 +358,22 @@ fun VotingApp() {
             }
         ) {
 
-            var currentScreen by remember {
+            // Save navigation and active login context if Android recreates the
+            // Activity after the app has been in the background. Explicit Logout
+            // still clears these values below.
+            var currentScreen by rememberSaveable {
                 mutableStateOf("welcome")
             }
 
-            var studentId by remember {
+            var studentId by rememberSaveable {
                 mutableStateOf("")
             }
 
-            var institutionalFullName by remember {
+            var institutionalFullName by rememberSaveable {
                 mutableStateOf("")
             }
 
-            var selectedElectionId by remember {
+            var selectedElectionId by rememberSaveable {
                 mutableStateOf(0)
             }
 
