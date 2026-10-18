@@ -79,6 +79,9 @@ from blockchain import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 # ============================================================
 # DATABASE
 # ============================================================
@@ -603,14 +606,16 @@ def _send_verification_email(to_email: str, code: str):
                 server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
                 server.send_message(message)
     except Exception as exc:
+        # Log only the exception class; never log credentials, OTPs, email content,
+        # or SMTP server response details.
         logger.error(
-        "Verification email delivery failed; exception_type=%s",
-        type(exc).__name__,
-    )
-    raise HTTPException(
-        status_code=503,
-        detail="Verification email could not be sent. Please try again later."
-    ) from exc
+            "Verification email delivery failed; exception_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Verification email could not be sent. Please try again later.",
+        ) from exc
 
 @app.post("/account/verification/request")
 def request_voter_account_verification(payload: AccountVerificationRequest, db: Session = Depends(get_db)):
