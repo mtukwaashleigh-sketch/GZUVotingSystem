@@ -571,62 +571,57 @@ class AccountVerificationComplete(BaseModel):
 
 
 def _email_verification_config():
-    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "ACCOUNT_VERIFICATION_SECRET"]
+    required = ["BREVO_API_KEY", "SMTP_FROM", "ACCOUNT_VERIFICATION_SECRET"]
     missing = [name for name in required if not os.getenv(name)]
     if missing:
-        raise HTTPException(status_code=503, detail="Account activation is temporarily unavailable because email verification is not configured.")
-    try:
-        port = int(os.environ["SMTP_PORT"])
-    except ValueError:
-        raise HTTPException(status_code=503, detail="Email service configuration is invalid.")
-    return port
+        raise HTTPException(
+            status_code=503,
+            detail="Account activation is temporarily unavailable because email verification is not configured.",
+        )
+    return True
 
 
 def _send_verification_email(to_email: str, code: str):
-    port = _email_verification_config()
-    message = EmailMessage()
-    message["Subject"] = "GZU Voting account verification code"
-    message["From"] = os.environ["SMTP_FROM"]
-    message["To"] = to_email
-    message.set_content(
-        "Your GZU Voting verification code is: " + code + "\n\n"
-        "It expires in 10 minutes and can be used once. If you did not request this, ignore this email."
+    """Send the account-verification code through Brevo's HTTPS API, not SMTP."""
+    _email_verification_config()
+    payload = {
+        "sender": {
+            "name": os.getenv("SMTP_FROM_NAME", "GZU Voting"),
+            "email": os.environ["SMTP_FROM"],
+        },
+        "to": [{"email": to_email}],
+        "subject": "GZU Voting account verification code",
+        "textContent": (
+            "Your GZU Voting verification code is: " + code + "\n\n"
+            "It expires in 10 minutes and can be used once. "
+            "If you did not request this, ignore this email."
+        ),
+    }
+    request = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "api-key": os.environ["BREVO_API_KEY"],
+            "content-type": "application/json",
+        },
+        method="POST",
     )
-    stage = "configuration"
     try:
-        host = os.environ["SMTP_HOST"]
-        use_ssl = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
-        logger.info("SMTP diagnostic: connecting; host=%s port=%s ssl=%s", host, port, use_ssl)
-        if use_ssl:
-            stage = "SSL connection/greeting"
-            with smtplib.SMTP_SSL(host, port, timeout=15) as server:
-                logger.info("SMTP diagnostic: connected using SSL")
-                stage = "authentication"
-                server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
-                logger.info("SMTP diagnostic: login successful")
-                stage = "message submission"
-                server.send_message(message)
-        else:
-            stage = "SMTP connection/greeting"
-            with smtplib.SMTP(host, port, timeout=15) as server:
-                logger.info("SMTP diagnostic: connected")
-                stage = "EHLO"
-                server.ehlo()
-                logger.info("SMTP diagnostic: EHLO successful")
-                stage = "STARTTLS handshake"
-                server.starttls()
-                logger.info("SMTP diagnostic: STARTTLS successful")
-                stage = "EHLO after STARTTLS"
-                server.ehlo()
-                stage = "authentication"
-                server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
-                logger.info("SMTP diagnostic: login successful")
-                stage = "message submission"
-                server.send_message(message)
-        logger.info("SMTP diagnostic: message accepted by SMTP server")
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status != 201:
+                logger.error("Brevo email API returned unexpected HTTP status=%s", response.status)
+                raise RuntimeError("Unexpected email API response")
+            logger.info("Verification email accepted by Brevo API")
+    except urllib.error.HTTPError as exc:
+        # Do not log response bodies or credentials; they may contain sensitive details.
+        logger.error("Brevo email API rejected request; http_status=%s", exc.code)
+        raise HTTPException(
+            status_code=503,
+            detail="Verification email could not be sent. Please check the email service configuration and try again later.",
+        ) from exc
     except Exception as exc:
-        # Never log credentials, OTPs, email content, or SMTP server response details.
-        logger.error("Verification email delivery failed; stage=%s exception_type=%s", stage, type(exc).__name__)
+        logger.error("Brevo email API delivery request failed; exception_type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail="Verification email could not be sent. Please try again later.",
