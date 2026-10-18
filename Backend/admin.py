@@ -2362,6 +2362,7 @@ def create_voter_page(request: Request, _admin: str = Depends(require_admin)):
     <div class="form-card"><h2>Send verification code</h2>
     <p class="form-description">Enter only the institutional ID. The code is sent to the email already stored in the official roster. The student can verify later on their own phone and choose their own password.</p>
     <form method="post" action="/admin/voters/create">
+      {csrf_input(request)}
       <label for="student_id">Institutional ID</label>
       <input id="student_id" name="student_id" required minlength="2" maxlength="80" autocomplete="off" />
       <div class="form-actions"><button class="button" type="submit">Initiate registration</button>
