@@ -592,26 +592,41 @@ def _send_verification_email(to_email: str, code: str):
         "Your GZU Voting verification code is: " + code + "\n\n"
         "It expires in 10 minutes and can be used once. If you did not request this, ignore this email."
     )
+    stage = "configuration"
     try:
         host = os.environ["SMTP_HOST"]
-        if os.getenv("SMTP_USE_SSL", "false").lower() == "true":
+        use_ssl = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
+        logger.info("SMTP diagnostic: connecting; host=%s port=%s ssl=%s", host, port, use_ssl)
+        if use_ssl:
+            stage = "SSL connection/greeting"
             with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+                logger.info("SMTP diagnostic: connected using SSL")
+                stage = "authentication"
                 server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                logger.info("SMTP diagnostic: login successful")
+                stage = "message submission"
                 server.send_message(message)
         else:
+            stage = "SMTP connection/greeting"
             with smtplib.SMTP(host, port, timeout=15) as server:
+                logger.info("SMTP diagnostic: connected")
+                stage = "EHLO"
                 server.ehlo()
+                logger.info("SMTP diagnostic: EHLO successful")
+                stage = "STARTTLS handshake"
                 server.starttls()
+                logger.info("SMTP diagnostic: STARTTLS successful")
+                stage = "EHLO after STARTTLS"
                 server.ehlo()
+                stage = "authentication"
                 server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                logger.info("SMTP diagnostic: login successful")
+                stage = "message submission"
                 server.send_message(message)
+        logger.info("SMTP diagnostic: message accepted by SMTP server")
     except Exception as exc:
-        # Log only the exception class; never log credentials, OTPs, email content,
-        # or SMTP server response details.
-        logger.error(
-            "Verification email delivery failed; exception_type=%s",
-            type(exc).__name__,
-        )
+        # Never log credentials, OTPs, email content, or SMTP server response details.
+        logger.error("Verification email delivery failed; stage=%s exception_type=%s", stage, type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail="Verification email could not be sent. Please try again later.",
