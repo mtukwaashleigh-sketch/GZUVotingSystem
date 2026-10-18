@@ -78,7 +78,7 @@ from blockchain import (
     CONTRACT_ADDRESS,
 )
 
-
+import logging
 logger = logging.getLogger(__name__)
 
 
