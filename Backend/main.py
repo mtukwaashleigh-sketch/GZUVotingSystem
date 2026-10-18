@@ -603,9 +603,14 @@ def _send_verification_email(to_email: str, code: str):
                 server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
                 server.send_message(message)
     except Exception as exc:
-        # Do not log credentials, OTPs, or SMTP response details.
-        raise HTTPException(status_code=503, detail="Verification email could not be sent. Please try again later.") from exc
-
+        logger.error(
+        "Verification email delivery failed; exception_type=%s",
+        type(exc).__name__,
+    )
+    raise HTTPException(
+        status_code=503,
+        detail="Verification email could not be sent. Please try again later."
+    ) from exc
 
 @app.post("/account/verification/request")
 def request_voter_account_verification(payload: AccountVerificationRequest, db: Session = Depends(get_db)):
