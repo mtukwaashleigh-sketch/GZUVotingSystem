@@ -16,6 +16,20 @@ import retrofit2.http.Body
 
 interface VotingApi {
 
+    // Secure voter account registration. The backend sends the code only to the
+    // institutional email already stored in the trusted identity roster.
+    @POST("account/verification/request")
+    suspend fun requestVoterAccountVerification(
+        @Body payload: JsonObject
+    ): Response<JsonObject>
+
+    // Complete registration after the voter receives the one-time email code.
+    // JSON fields: identifier, email, code, new_password.
+    @POST("account/verification/complete")
+    suspend fun completeVoterAccountVerification(
+        @Body payload: JsonObject
+    ): Response<JsonObject>
+
     @POST("api/public/assistant/chat")
     suspend fun askElectionAssistant(
         @Body payload: JsonObject

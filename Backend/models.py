@@ -248,3 +248,15 @@ class BlockchainTransactionAudit(Base):
     verified_at = Column(String(40), nullable=True)
     last_verification_status = Column(String(40), nullable=True)
     last_verification_details = Column(String, nullable=True)
+
+
+class VoterAccountVerification(Base):
+    """Short-lived email verification challenges; no plaintext OTP is stored."""
+    __tablename__ = "voter_account_verifications"
+    id = Column(Integer, primary_key=True, index=True)
+    identifier = Column(String, nullable=False, unique=True, index=True)
+    email = Column(String, nullable=False)
+    code_hash = Column(String, nullable=False)
+    expires_at = Column(Integer, nullable=False)
+    last_sent_at = Column(Integer, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)

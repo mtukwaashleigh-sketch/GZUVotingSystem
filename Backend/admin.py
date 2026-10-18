@@ -2,6 +2,8 @@ from database import SessionLocal
 import secrets
 import re
 import json
+import os, hmac, hashlib, time, smtplib
+from email.message import EmailMessage
 from fastapi import APIRouter, Depends, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -15,7 +17,8 @@ from models import (
     VotingRecord,
     Vote,
     BlockchainTransactionAudit,
-    VoterReceipt
+    VoterReceipt,
+    VoterAccountVerification
 )
 
 
@@ -2351,114 +2354,20 @@ def voter_management(
     "/admin/voters/create",
     response_class=HTMLResponse
 )
-def create_voter_page(
-    request: Request
-):
-
+def create_voter_page(request: Request, _admin: str = Depends(require_admin)):
     message = get_flash(request)
-
     content = """
-
-    <div class="page-heading">
-
-        <div>
-
-            <h2>
-                Create Voter
-            </h2>
-
-            <p>
-                Add a verified student or employee to the institutional election system.
-            </p>
-
-        </div>
-
-    </div>
-
-
-    <div class="form-card">
-
-        <h2>
-            Voter Information
-        </h2>
-
-        <p class="form-description">
-            Enter the institutional identity details below. The identifier and name must exist in the official Registry/HR roster.
-        </p>
-
-
-        <form
-            method="post"
-            action="/admin/voters/create"
-        >
-            <label>Institutional ID type</label>
-            <select name="identity_type" required>
-                <option value="student">Student ID / registration number</option>
-                <option value="employee">Employee EC number</option>
-            </select>
-
-            <label>Institutional ID / registration number</label>
-            <input type="text" name="student_id" placeholder="e.g. M250000 or employee EC number" required>
-
-            <label>Full name (must match the official roster)</label>
-            <input type="text" name="full_name" placeholder="Full legal name" required>
-
-
-            <label>
-                Email
-            </label>
-
-            <input
-                type="email"
-                name="email"
-                placeholder="name@example.com"
-                required
-            >
-
-
-            <label>
-                Password
-            </label>
-
-            <input
-                type="password"
-                name="password"
-                required
-            >
-
-
-            <div class="form-actions">
-
-                <button
-                    type="submit"
-                    class="button"
-                >
-                    Create Voter
-                </button>
-
-                <a
-                    href="/admin/voters"
-                    class="button button-light"
-                >
-                    Cancel
-                </a>
-
-            </div>
-
-        </form>
-
-    </div>
-
-    """
-
-    return HTMLResponse(
-        page_template(
-            "Create Voter",
-            content,
-            message,
-            "voters"
-        )
-    )
+    <div class="page-heading"><div><h2>Initiate Voter Registration</h2>
+    <p>Start account activation for a student or employee on the official Registry/HR roster.</p></div></div>
+    <div class="form-card"><h2>Send verification code</h2>
+    <p class="form-description">Enter only the institutional ID. The code is sent to the email already stored in the official roster. The student can verify later on their own phone and choose their own password.</p>
+    <form method="post" action="/admin/voters/create">
+      <label for="student_id">Institutional ID</label>
+      <input id="student_id" name="student_id" required minlength="2" maxlength="80" autocomplete="off" />
+      <div class="form-actions"><button class="button" type="submit">Initiate registration</button>
+      <a href="/admin/voters" class="button button-light">Return to Voters</a></div>
+    </form></div>"""
+    return HTMLResponse(page_template("Initiate Voter Registration", content, message, "voters"))
 
 
 # ============================================================
@@ -2469,137 +2378,64 @@ def create_voter_page(
     "/admin/voters/create"
 )
 def create_voter(
-
     request: Request,
-
     student_id: str = Form(...),
-    full_name: str = Form(...),
-    identity_type: str = Form("student"),
-
-    email: str = Form(...),
-
-    password: str = Form(...)
-
+    _admin: str = Depends(require_admin),
 ):
-
+    """Admin initiates verification only; never accepts or sets a voter password."""
+    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "ACCOUNT_VERIFICATION_SECRET"]
+    if any(not os.getenv(k) for k in required):
+        set_flash(request, "Registration email is not configured yet. Set the Brevo SMTP environment variables before initiating registration.")
+        return RedirectResponse("/admin/voters/create", status_code=303)
     db = get_db()
-
     try:
-        student_id = student_id.strip().upper()
-        identity = db.query(InstitutionalIdentity).filter(
-            InstitutionalIdentity.identifier == student_id
-        ).first()
-        if not identity:
-            set_flash(request, "Identity not verified: this ID is not in the official GZU Registry/HR roster. Import the authoritative roster before creating accounts.")
+        identifier = " ".join(student_id.strip().upper().split())
+        identity = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == identifier).first()
+        generic = "If this ID matches an official Registry/HR record and has no account, a verification code has been sent to the recorded institutional email. The student can complete setup later on their own device."
+        if not identity or not identity.institutional_email:
+            set_flash(request, generic)
             return RedirectResponse("/admin/voters/create", status_code=303)
-        if identity.full_name.strip().casefold() != full_name.strip().casefold():
-            set_flash(request, "Identity not verified: the name does not match the official Registry/HR record.")
+        if db.query(Voter).filter((Voter.student_id == identifier) | (Voter.email == identity.institutional_email.strip())).first():
+            set_flash(request, "An account already exists for this identity or email. No new account was created.")
             return RedirectResponse("/admin/voters/create", status_code=303)
-        if identity.identity_type != identity_type:
-            set_flash(request, "Identity type does not match the official Registry/HR record.")
+        now = int(time.time())
+        challenge = db.query(VoterAccountVerification).filter(VoterAccountVerification.identifier == identifier).first()
+        if challenge and now - challenge.last_sent_at < 60:
+            set_flash(request, "A code was sent recently. Wait at least 60 seconds before trying again.")
             return RedirectResponse("/admin/voters/create", status_code=303)
-        if not identity.institutional_email or identity.institutional_email.strip().casefold() != email.strip().casefold():
-            set_flash(request, "Email verification failed: enter the institutional email held by Registry/HR. Accounts without an official contact address cannot be created.")
-            return RedirectResponse("/admin/voters/create", status_code=303)
-
-        existing_student = (
-            db.query(Voter)
-            .filter(
-                Voter.student_id == student_id
-            )
-            .first()
-        )
-
-        if existing_student:
-
-            set_flash(
-                request,
-                f"Voter {student_id} already exists."
-            )
-
-            return RedirectResponse(
-                "/admin/voters",
-                status_code=303
-            )
-
-        existing_email = (
-            db.query(Voter)
-            .filter(
-                Voter.email == email
-            )
-            .first()
-        )
-
-        if existing_email:
-
-            set_flash(
-                request,
-                f"Email {email} is already registered."
-            )
-
-            return RedirectResponse(
-                "/admin/voters",
-                status_code=303
-            )
-
-        import bcrypt
-
-        if len(password.encode("utf-8")) > 72:
-
-            set_flash(
-                request,
-                "Password is too long. "
-                "Please use a password of 72 bytes or less."
-            )
-
-            return RedirectResponse(
-                "/admin/voters/create",
-                status_code=303
-            )
-
-        hashed_password = bcrypt.hashpw(
-            password.encode("utf-8"),
-            bcrypt.gensalt()
-        ).decode("utf-8")
-
-        voter = Voter(
-            student_id=student_id.strip(),
-            email=email,
-            password=hashed_password,
-            full_name=identity.full_name,
-            identity_type=identity.identity_type
-        )
-
-        db.add(voter)
-
+        code = f"{secrets.randbelow(1000000):06d}"
+        email = identity.institutional_email.strip()
+        digest = hmac.new(os.environ["ACCOUNT_VERIFICATION_SECRET"].encode(), f"{identifier}:{email.casefold()}:{code}".encode(), hashlib.sha256).hexdigest()
+        if challenge:
+            challenge.email, challenge.code_hash, challenge.expires_at = email, digest, now + 600
+            challenge.last_sent_at, challenge.attempts = now, 0
+        else:
+            db.add(VoterAccountVerification(identifier=identifier, email=email, code_hash=digest, expires_at=now + 600, last_sent_at=now, attempts=0))
         db.commit()
-
-        set_flash(
-            request,
-            f"Voter {student_id} was created successfully."
-        )
-
-        return RedirectResponse(
-            "/admin/voters",
-            status_code=303
-        )
-
-    except Exception as e:
-
-        db.rollback()
-
-        set_flash(
-            request,
-            f"Unable to create voter: {str(e)}"
-        )
-
-        return RedirectResponse(
-            "/admin/voters",
-            status_code=303
-        )
-
+        msg = EmailMessage()
+        msg["Subject"] = "GZU Voting account verification code"
+        msg["From"] = os.environ["SMTP_FROM"]
+        msg["To"] = email
+        msg.set_content(f"Your GZU Voting verification code is: {code}\n\nIt expires in 10 minutes and can be used once. If you did not expect this, ignore this email.")
+        try:
+            port = int(os.environ["SMTP_PORT"])
+            if os.getenv("SMTP_USE_SSL", "false").lower() == "true":
+                with smtplib.SMTP_SSL(os.environ["SMTP_HOST"], port, timeout=15) as server:
+                    server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(os.environ["SMTP_HOST"], port, timeout=15) as server:
+                    server.ehlo(); server.starttls(); server.ehlo()
+                    server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                    server.send_message(msg)
+        except Exception:
+            db.query(VoterAccountVerification).filter(VoterAccountVerification.identifier == identifier).delete(synchronize_session=False)
+            db.commit()
+            set_flash(request, "The verification email could not be sent. Check Brevo sender verification and SMTP settings, then retry.")
+            return RedirectResponse("/admin/voters/create", status_code=303)
+        set_flash(request, generic)
+        return RedirectResponse("/admin/voters/create", status_code=303)
     finally:
-
         db.close()
 
 

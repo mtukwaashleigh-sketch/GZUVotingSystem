@@ -383,10 +383,17 @@ fun VotingApp() {
                     onGetStarted = {
                         currentScreen = "login"
                     },
+                    onRegister = { currentScreen = "register" },
 
                     onExit = {
                         (context as? ComponentActivity)?.finish()
                     }
+                )
+
+            } else if (currentScreen == "register") {
+                VoterAccountRegistrationScreen(
+                    onBack = { currentScreen = "welcome" },
+                    onRegistrationComplete = { currentScreen = "login" }
                 )
 
             } else if (currentScreen == "login") {
@@ -770,6 +777,7 @@ fun AppHeader(
 @Composable
 fun WelcomeScreen(
     onGetStarted: () -> Unit,
+    onRegister: () -> Unit,
     onExit: () -> Unit
 ) {
     Box(
@@ -838,6 +846,14 @@ fun WelcomeScreen(
             ) {
                 Text("Get started", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onRegister,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.8f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+            ) { Text("Create / activate account", fontSize = 15.sp) }
             Spacer(Modifier.height(14.dp))
             TextButton(onClick = onExit) {
                 Text("Exit app", color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp)
@@ -953,6 +969,109 @@ private object LoginCredentialVault {
         return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
     }
 }
+
+
+
+// ============================================================
+// SECURE VOTER ACCOUNT REGISTRATION
+// The server sends the OTP only to the institutional email on the trusted roster.
+// The student can finish this later on their own device.
+// ============================================================
+
+@Composable
+fun VoterAccountRegistrationScreen(
+    onBack: () -> Unit,
+    onRegistrationComplete: () -> Unit
+) {
+    var identifier by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var code by rememberSaveable { mutableStateOf("") }
+    var newPassword by rememberSaveable { mutableStateOf("") }
+    var confirmPassword by rememberSaveable { mutableStateOf("") }
+    var codeRequested by rememberSaveable { mutableStateOf(false) }
+    var message by rememberSaveable { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    Column(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        TextButton(onClick = onBack) { Text("← Back") }
+        Text("Create your voter account", style = MaterialTheme.typography.headlineSmall)
+        Text("Enter the institutional ID and email held by Registry/HR. A verification code will be sent to that recorded email address.")
+        OutlinedTextField(value = identifier, onValueChange = { identifier = it.uppercase().take(80) },
+            label = { Text("Institutional ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(value = email, onValueChange = { email = it.trim().take(254) },
+            label = { Text("Institutional email") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next))
+        if (codeRequested) {
+            OutlinedTextField(value = code, onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                label = { Text("6-digit email code") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next))
+            OutlinedTextField(value = newPassword, onValueChange = { newPassword = it.take(72) },
+                label = { Text("Create password (at least 12 characters)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(value = confirmPassword, onValueChange = { confirmPassword = it.take(72) },
+                label = { Text("Confirm password") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = PasswordVisualTransformation())
+        }
+        if (!codeRequested) {
+            TextButton(onClick = { codeRequested = true; message = "Enter the code the administrator initiated and sent to your roster email." }) {
+                Text("Already received a code? Enter it")
+            }
+        }
+        if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.primary)
+        Button(
+            enabled = !isLoading && identifier.isNotBlank() && email.contains("@") &&
+                    (!codeRequested || (code.length == 6 && newPassword.length >= 12 && newPassword == confirmPassword)),
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                scope.launch {
+                    isLoading = true
+                    message = ""
+                    try {
+                        val payload = JsonObject().apply {
+                            addProperty("identifier", identifier.trim())
+                            addProperty("email", email.trim())
+                            if (codeRequested) {
+                                addProperty("code", code)
+                                addProperty("new_password", newPassword)
+                            }
+                        }
+                        if (!codeRequested) {
+                            val response = RetrofitClient.api.requestVoterAccountVerification(payload)
+                            if (response.isSuccessful) {
+                                codeRequested = true
+                                message = "If the details match the official roster, a code has been sent to the recorded institutional email. Check your inbox and spam folder."
+                            } else {
+                                message = "Could not request a code (HTTP ${response.code()}). Check the details or try again later."
+                            }
+                        } else {
+                            val response = RetrofitClient.api.completeVoterAccountVerification(payload)
+                            if (response.isSuccessful) {
+                                message = "Account activated. You can now sign in."
+                                onRegistrationComplete()
+                            } else {
+                                message = "Verification failed (HTTP ${response.code()}). Check the code and try again."
+                            }
+                        }
+                    } catch (_: Exception) {
+                        message = "Could not reach the registration service. Check your connection and try again."
+                    } finally { isLoading = false }
+                }
+            }
+        ) {
+            if (isLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Text(if (codeRequested) "Verify code and activate account" else "Send verification code")
+        }
+        Text("For security, the code expires after 10 minutes, can be used once, and is sent only to the email stored in the official roster.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 
 // ============================================================
 // LOGIN SCREEN

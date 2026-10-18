@@ -4,6 +4,11 @@ import json
 import secrets
 import time
 import threading
+import smtplib
+import hmac
+import os
+import re
+from email.message import EmailMessage
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -52,7 +57,8 @@ from models import (
     CandidateProfile,
     InstitutionalIdentity,
     BlockchainTransactionAudit,
-    VoterReceipt
+    VoterReceipt,
+    VoterAccountVerification
 )
 
 from admin import router as admin_router
@@ -544,6 +550,161 @@ def synchronize_blockchain():
     )
     print("==============================================")
     print("")
+
+
+# ============================================================
+# SECURE VOTER SELF-ACTIVATION (email OTP; no admin-set passwords)
+# ============================================================
+
+class AccountVerificationRequest(BaseModel):
+    identifier: str = Field(min_length=2, max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+
+class AccountVerificationComplete(BaseModel):
+    identifier: str = Field(min_length=2, max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+    code: str = Field(min_length=6, max_length=6)
+    new_password: str = Field(min_length=12, max_length=72)
+
+
+def _email_verification_config():
+    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "ACCOUNT_VERIFICATION_SECRET"]
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        raise HTTPException(status_code=503, detail="Account activation is temporarily unavailable because email verification is not configured.")
+    try:
+        port = int(os.environ["SMTP_PORT"])
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Email service configuration is invalid.")
+    return port
+
+
+def _send_verification_email(to_email: str, code: str):
+    port = _email_verification_config()
+    message = EmailMessage()
+    message["Subject"] = "GZU Voting account verification code"
+    message["From"] = os.environ["SMTP_FROM"]
+    message["To"] = to_email
+    message.set_content(
+        "Your GZU Voting verification code is: " + code + "\n\n"
+        "It expires in 10 minutes and can be used once. If you did not request this, ignore this email."
+    )
+    try:
+        host = os.environ["SMTP_HOST"]
+        if os.getenv("SMTP_USE_SSL", "false").lower() == "true":
+            with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+                server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+                server.send_message(message)
+    except Exception as exc:
+        # Do not log credentials, OTPs, or SMTP response details.
+        raise HTTPException(status_code=503, detail="Verification email could not be sent. Please try again later.") from exc
+
+
+@app.post("/account/verification/request")
+def request_voter_account_verification(payload: AccountVerificationRequest, db: Session = Depends(get_db)):
+    """Send an OTP only to the email address stored in the official identity roster."""
+    _email_verification_config()
+    identifier = " ".join(payload.identifier.strip().upper().split())
+    supplied_email = payload.email.strip().casefold()
+    identity = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == identifier).first()
+    # Same response for unknown/mismatched identities avoids roster enumeration.
+    generic = {"message": "If the details match an eligible GZU Registry/HR record, a verification code will be sent to its recorded institutional email."}
+    if not identity or not identity.institutional_email or identity.institutional_email.strip().casefold() != supplied_email:
+        return generic
+    existing_voter = db.query(Voter).filter(Voter.student_id == identifier).first()
+    if existing_voter:
+        return generic
+    now = int(time.time())
+    challenge = db.query(VoterAccountVerification).filter(VoterAccountVerification.identifier == identifier).first()
+    if challenge and now - challenge.last_sent_at < 60:
+        return generic
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    secret = os.environ["ACCOUNT_VERIFICATION_SECRET"].encode("utf-8")
+    digest = hmac.new(secret, f"{identifier}:{supplied_email}:{code}".encode(), hashlib.sha256).hexdigest()
+    if challenge:
+        challenge.email = identity.institutional_email.strip()
+        challenge.code_hash = digest
+        challenge.expires_at = now + 600
+        challenge.last_sent_at = now
+        challenge.attempts = 0
+    else:
+        db.add(VoterAccountVerification(identifier=identifier, email=identity.institutional_email.strip(), code_hash=digest, expires_at=now + 600, last_sent_at=now, attempts=0))
+    db.commit()
+    try:
+        _send_verification_email(identity.institutional_email.strip(), code)
+    except Exception:
+        db.query(VoterAccountVerification).filter(VoterAccountVerification.identifier == identifier).delete(synchronize_session=False)
+        db.commit()
+        raise
+    return generic
+
+
+class AdminAccountVerificationRequest(BaseModel):
+    identifier: str = Field(min_length=2, max_length=80)
+
+
+@app.post("/admin/api/voters/verification/request")
+def admin_request_voter_account_verification(
+    payload: AdminAccountVerificationRequest,
+    _admin: dict = Depends(require_admin_api),
+    db: Session = Depends(get_db),
+):
+    """Admin initiates registration; the student still verifies and chooses their password."""
+    _email_verification_config()
+    identifier = " ".join(payload.identifier.strip().upper().split())
+    identity = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == identifier).first()
+    generic = {"message": "If the ID matches an official Registry/HR record, a verification code will be sent to the recorded institutional email."}
+    if not identity or not identity.institutional_email:
+        return generic
+    if db.query(Voter).filter((Voter.student_id == identifier) | (Voter.email == identity.institutional_email.strip())).first():
+        return generic
+    # Reuse the same guarded flow and its roster-email comparison; no password is accepted here.
+    return request_voter_account_verification(
+        AccountVerificationRequest(identifier=identifier, email=identity.institutional_email.strip()), db
+    )
+
+
+@app.post("/account/verification/complete")
+def complete_voter_account_verification(payload: AccountVerificationComplete, db: Session = Depends(get_db)):
+    """Verify a one-time email code and create the voter with their own password."""
+    _email_verification_config()
+    identifier = " ".join(payload.identifier.strip().upper().split())
+    supplied_email = payload.email.strip().casefold()
+    if not re.fullmatch(r"\d{6}", payload.code):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    identity = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == identifier).first()
+    challenge = db.query(VoterAccountVerification).filter(VoterAccountVerification.identifier == identifier).with_for_update().first()
+    now = int(time.time())
+    if (not identity or not identity.institutional_email or identity.institutional_email.strip().casefold() != supplied_email
+        or not challenge or challenge.email.strip().casefold() != supplied_email
+        or challenge.expires_at < now or challenge.attempts >= 5):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    expected = hmac.new(os.environ["ACCOUNT_VERIFICATION_SECRET"].encode(), f"{identifier}:{supplied_email}:{payload.code}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, challenge.code_hash):
+        challenge.attempts += 1
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    if db.query(Voter).filter((Voter.student_id == identifier) | (Voter.email == identity.institutional_email.strip())).first():
+        db.delete(challenge); db.commit()
+        raise HTTPException(status_code=409, detail="An account already exists for this identity or email.")
+    hashed_password = bcrypt.hashpw(payload.new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    voter = Voter(student_id=identifier, email=identity.institutional_email.strip(), password=hashed_password,
+                  full_name=identity.full_name, identity_type=identity.identity_type)
+    db.add(voter)
+    db.delete(challenge)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Account could not be created. Check whether an account already exists.")
+    return {"message": "Account activated. You can now sign in.", "student_id": identifier, "email": voter.email}
 
 
 # ============================================================
