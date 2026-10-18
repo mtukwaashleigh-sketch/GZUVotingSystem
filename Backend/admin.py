@@ -2368,6 +2368,7 @@ def create_voter_page(request: Request, _admin: str = Depends(require_admin)):
       <div class="form-actions"><button class="button" type="submit">Initiate registration</button>
       <a href="/admin/voters" class="button button-light">Return to Voters</a></div>
     </form></div>"""
+    content = content.replace("{csrf_input(request)}", csrf_input(request))
     return HTMLResponse(page_template("Initiate Voter Registration", content, message, "voters"))
 
 
