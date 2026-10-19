@@ -109,6 +109,8 @@ import kotlinx.coroutines.launch
 import zw.ac.gzu.voting.api.Candidate
 import zw.ac.gzu.voting.api.ElectionResult
 import zw.ac.gzu.voting.api.Nomination
+import zw.ac.gzu.voting.api.MyReceiptsRequest
+import zw.ac.gzu.voting.api.MyReceiptItem
 import zw.ac.gzu.voting.api.RetrofitClient
 
 
@@ -372,6 +374,9 @@ fun VotingApp() {
             var institutionalFullName by rememberSaveable {
                 mutableStateOf("")
             }
+            // Credentials stay in process memory only; never persist the password in saved state.
+            var signedInEmail by remember { mutableStateOf("") }
+            var signedInPassword by remember { mutableStateOf("") }
 
             var selectedElectionId by rememberSaveable {
                 mutableStateOf(0)
@@ -403,10 +408,12 @@ fun VotingApp() {
                         currentScreen = "welcome"
                     },
 
-                    onLoginSuccess = { registrationNumber, verifiedFullName ->
+                    onLoginSuccess = { registrationNumber, verifiedFullName, email, password ->
 
                         studentId = registrationNumber
                         institutionalFullName = verifiedFullName.trim()
+                        signedInEmail = email.trim()
+                        signedInPassword = password
 
                         currentScreen =
                             "dashboard"
@@ -463,12 +470,15 @@ fun VotingApp() {
 
                     onNominate = { currentScreen = "nomination" },
                     onMyNominations = { currentScreen = "my_nominations" },
+                    onMyReceipts = { currentScreen = "my_receipts" },
                     onAssistant = { currentScreen = "assistant" },
 
                     onLogout = {
 
                         studentId = ""
                         institutionalFullName = ""
+                        signedInEmail = ""
+                        signedInPassword = ""
 
                         selectedElectionId = 0
 
@@ -490,6 +500,12 @@ fun VotingApp() {
             } else if (currentScreen == "my_nominations") {
                 MyNominationsScreen(
                     studentId = studentId,
+                    onBack = { currentScreen = "dashboard" }
+                )
+            } else if (currentScreen == "my_receipts") {
+                MyReceiptsScreen(
+                    email = signedInEmail,
+                    password = signedInPassword,
                     onBack = { currentScreen = "dashboard" }
                 )
             } else if (currentScreen == "voting") {
@@ -1080,7 +1096,7 @@ fun VoterAccountRegistrationScreen(
 @Composable
 fun LoginScreen(
     onBack: () -> Unit,
-    onLoginSuccess: (String, String) -> Unit
+    onLoginSuccess: (String, String, String, String) -> Unit
 ) {
     val context = LocalContext.current
     val savedCredentials = remember { LoginCredentialVault.load(context) }
@@ -1727,7 +1743,9 @@ fun LoginScreen(
 
                                                     onLoginSuccess(
                                                         loginResponse.student_id,
-                                                        loginResponse.full_name.orEmpty()
+                                                        loginResponse.full_name.orEmpty(),
+                                                        studentEmail.trim(),
+                                                        password
                                                     )
 
                                                 } else {
@@ -1927,6 +1945,7 @@ fun StudentDashboardScreen(
     onResults: (Int) -> Unit,
     onNominate: () -> Unit,
     onMyNominations: () -> Unit,
+    onMyReceipts: () -> Unit,
     onAssistant: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -2114,6 +2133,11 @@ fun StudentDashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     ) { Text("My Nominations") }
+                    OutlinedButton(
+                        onClick = { showSettingsDialog = false; onMyReceipts() },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("My Receipts") }
                     OutlinedButton(
                         onClick = { showSettingsDialog = false; showAppearanceDialog = true },
                         modifier = Modifier.fillMaxWidth(),
@@ -3381,6 +3405,94 @@ fun NominationScreen(studentId: String, fullName: String, onBack: () -> Unit) {
                 }
             }
             if (message.isNotBlank()) item { Text(message, color = if (message.contains("successfully")) GzuGreen else MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+fun MyReceiptsScreen(email: String, password: String, onBack: () -> Unit) {
+    var receipts by remember { mutableStateOf<List<MyReceiptItem>>(emptyList()) }
+    var message by remember { mutableStateOf("Loading your receipts…") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        if (email.isBlank() || password.isBlank()) {
+            message = "Your login session has expired. Please log out and sign in again to view receipts."
+            receipts = emptyList()
+            return
+        }
+        scope.launch {
+            loading = true
+            message = ""
+            try {
+                val response = RetrofitClient.api.getMyReceipts(MyReceiptsRequest(email, password))
+                if (response.isSuccessful) {
+                    receipts = response.body()?.receipts.orEmpty()
+                    message = if (receipts.isEmpty()) {
+                        "No receipts are linked to this account yet. Receipts issued before receipt history was enabled may not appear."
+                    } else ""
+                } else {
+                    receipts = emptyList()
+                    message = when (response.code()) {
+                        401 -> "Your session could not be verified. Please log out and sign in again."
+                        403 -> "Your account is not matched to an active institutional identity. Contact the election administrator."
+                        else -> "Could not load receipts (${response.code()}). Please try again."
+                    }
+                }
+            } catch (_: Exception) {
+                message = "Could not connect to the server. Check your connection and try again."
+            } finally { loading = false }
+        }
+    }
+
+    LaunchedEffect(email, password) { reload() }
+    Column(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars).padding(18.dp)
+    ) {
+        AppHeader("My Receipts", "Private receipt history for your account", onBack)
+        Text(
+            "Your receipt history confirms that a receipt was recorded. It does not show your ballot choices.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(vertical = 10.dp)
+        )
+        OutlinedButton(onClick = { reload() }, modifier = Modifier.fillMaxWidth(), enabled = !loading) {
+            Text(if (loading) "Refreshing…" else "Refresh receipts")
+        }
+        if (loading) CircularProgressIndicator(Modifier.padding(20.dp))
+        if (message.isNotBlank()) Text(
+            message,
+            Modifier.fillMaxWidth().padding(vertical = 14.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyLarge
+        )
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(receipts) { receipt ->
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text(
+                            receipt.election_title.ifBlank { "Election ${receipt.election_id}" },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text("Recorded: ${receipt.created_at}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Receipt record: #${receipt.receipt_id}", color = MaterialTheme.colorScheme.onSurface)
+                        Text("Transactions recorded: ${receipt.transactions_expected}", color = MaterialTheme.colorScheme.onSurface)
+                        Text("Status: ${receipt.status.replaceFirstChar { it.uppercase() }}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
         }
     }
 }

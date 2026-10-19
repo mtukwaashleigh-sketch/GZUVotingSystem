@@ -14,6 +14,14 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Body
 
+
+data class MyReceiptsRequest(val email: String, val password: String)
+data class MyReceiptItem(
+    val receipt_id: Int, val election_id: Int, val election_title: String,
+    val created_at: String, val transactions_expected: Int, val status: String
+)
+data class MyReceiptsResponse(val receipts: List<MyReceiptItem>)
+
 interface VotingApi {
 
     // Secure voter account registration. The backend sends the code only to the
@@ -83,6 +91,9 @@ interface VotingApi {
 
     @POST("vote/ballot")
     suspend fun castBallot(@Body ballot: BallotSubmission): Response<JsonObject>
+
+    @POST("vote/my-receipts")
+    suspend fun getMyReceipts(@Body payload: MyReceiptsRequest): Response<MyReceiptsResponse>
 
     @GET("vote/receipt/verify/{receipt_code}")
     suspend fun verifyVoterReceipt(
