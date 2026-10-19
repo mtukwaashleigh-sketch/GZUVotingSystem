@@ -228,6 +228,8 @@ class VoterReceipt(Base):
     transaction_hashes = Column(String, nullable=False)
     expected_transactions = Column(Integer, nullable=False)
     created_at = Column(String(40), nullable=False, index=True)
+    # Institutional identifier of the authenticated voter; nullable for legacy receipts.
+    owner_identifier = Column(String(120), nullable=True, index=True)
 
 
 class BlockchainTransactionAudit(Base):

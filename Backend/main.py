@@ -90,6 +90,16 @@ Base.metadata.create_all(
     bind=engine
 )
 
+# Add receipt ownership to existing installations without deleting any data.
+try:
+    receipt_columns = {column["name"] for column in inspect(engine).get_columns("voter_receipts")}
+    if "owner_identifier" not in receipt_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE voter_receipts ADD COLUMN owner_identifier VARCHAR(120) NULL"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_voter_receipts_owner_identifier ON voter_receipts (owner_identifier)"))
+except Exception as migration_error:
+    raise RuntimeError("Could not apply voter_receipts.owner_identifier migration; existing data was not deleted.") from migration_error
+
 # Add the withdrawal flag to existing installations without dropping or resetting data.
 # create_all() does not add columns to tables that already exist.
 try:
@@ -207,7 +217,7 @@ def get_db():
 # PRIVACY-PRESERVING VOTER RECEIPTS
 # ============================================================
 
-def _create_voter_receipt(db: Session, election_id: int, tx_hashes: list[str]) -> str:
+def _create_voter_receipt(db: Session, election_id: int, tx_hashes: list[str], owner_identifier: str | None = None) -> str:
     """Create an unguessable receipt code; store only its SHA-256 hash.
 
     Transaction hashes are kept server-side and are never returned by the
@@ -227,9 +237,36 @@ def _create_voter_receipt(db: Session, election_id: int, tx_hashes: list[str]) -
         transaction_hashes=json.dumps([str(value) for value in tx_hashes]),
         expected_transactions=len(tx_hashes),
         created_at=datetime.now(timezone.utc).isoformat(),
+        owner_identifier=(" ".join(owner_identifier.strip().upper().split()) if owner_identifier else None),
     )
     db.add(record)
     return receipt_code
+
+
+class MyReceiptsCredentials(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+def _authenticate_receipt_owner(payload: MyReceiptsCredentials, db: Session) -> Voter:
+    voter = db.query(Voter).filter(Voter.email == payload.email.strip().lower()).first()
+    if not voter or not voter.password or not bcrypt.checkpw(payload.password.encode("utf-8"), voter.password.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    identifier = " ".join((voter.student_id or "").strip().upper().split())
+    identity = db.query(InstitutionalIdentity).filter(InstitutionalIdentity.identifier == identifier).first()
+    if not identifier or not identity or not (identity.full_name or "").strip():
+        raise HTTPException(status_code=403, detail="Institutional identity is not verified.")
+    return voter
+
+
+@app.post("/vote/my-receipts")
+def my_receipts(payload: MyReceiptsCredentials, db: Session = Depends(get_db)):
+    """Return only receipts owned by the verified student or employee signing in."""
+    voter = _authenticate_receipt_owner(payload, db)
+    identifier = " ".join((voter.student_id or "").strip().upper().split())
+    rows = db.query(VoterReceipt).filter(VoterReceipt.owner_identifier == identifier).order_by(VoterReceipt.id.desc()).limit(200).all()
+    titles = {e.id: e.title for e in db.query(Election).filter(Election.id.in_({r.election_id for r in rows})).all()} if rows else {}
+    return {"receipts": [{"receipt_id": r.id, "election_id": r.election_id, "election_title": titles.get(r.election_id, f"Election #{r.election_id}"), "created_at": r.created_at, "transactions_expected": r.expected_transactions, "status": "stored"} for r in rows]}
 
 
 @app.get("/verify-receipt", response_class=HTMLResponse)
@@ -1494,7 +1531,7 @@ def cast_vote(
     )
 
     transaction_hash = receipt["transactionHash"].hex()
-    receipt_code = _create_voter_receipt(db, election_id, [transaction_hash])
+    receipt_code = _create_voter_receipt(db, election_id, [transaction_hash], student_id)
     try:
         db.commit()
     except Exception as exc:
@@ -1601,6 +1638,7 @@ def cast_ballot(payload: BallotSubmission, db: Session = Depends(get_db)):
             db,
             payload.election_id,
             [tx_hash for _candidate, _position, tx_hash in results],
+            student_id,
         )
         db.commit()
     except Exception as exc:

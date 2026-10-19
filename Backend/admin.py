@@ -5600,7 +5600,13 @@ def admin_voter_receipts(
                 <td>{safe(row.chain_id)}</td>
                 <td>{safe(row.expected_transactions)}</td>
                 <td>{safe(row.created_at)}</td>
-                <td><span class="receipt-status">Stored · verify on demand</span></td>
+                <td>
+                  <form method="post" action="/admin/receipts/verify" class="receipt-verify-form">
+                    {csrf_input(request)}
+                    <input type="hidden" name="receipt_id" value="{safe(row.id)}">
+                    <button type="submit">Verify on blockchain</button>
+                  </form>
+                </td>
               </tr>
             """)
         content = f"""
@@ -5618,6 +5624,7 @@ def admin_voter_receipts(
           .receipt-table th,.receipt-table td{{padding:13px;text-align:left;border-bottom:1px solid #e5e7eb}}
           .receipt-table th{{background:#f8faf9;font-size:12px;text-transform:uppercase;color:#64748b}}
           .receipt-status{{font-size:12px;padding:5px 8px;background:#fff7df;color:#854d0e;border-radius:6px}}
+          .receipt-verify-form button{{background:#087f3e;color:#fff;border:0;border-radius:7px;padding:9px 11px;font-weight:600;cursor:pointer}}
         </style>
         <div class="page-heading"><div><h1>Voter Receipts</h1><p>Monitor receipt records without exposing voter identities or ballot selections.</p></div></div>
         <div class="receipt-summary">
@@ -5637,6 +5644,65 @@ def admin_voter_receipts(
         </table></div>
         """
         return HTMLResponse(page_template("Voter Receipts", content, get_flash(request), "receipts"))
+    finally:
+        db.close()
+
+
+@router.post("/admin/receipts/verify", response_class=HTMLResponse)
+def admin_verify_voter_receipt(
+    request: Request,
+    receipt_id: int = Form(...),
+    csrf_token: str = Form(...),
+    admin: str = Depends(require_admin),
+):
+    """Recheck a receipt's stored transaction statuses without exposing hashes or ballot data."""
+    expected_csrf = request.session.get("admin_review_csrf")
+    if not expected_csrf or not secrets.compare_digest(expected_csrf, csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token. Refresh the page and try again.")
+
+    from blockchain import web3
+    db = get_db()
+    try:
+        record = db.query(VoterReceipt).filter(VoterReceipt.id == receipt_id).first()
+        if record is None:
+            set_flash(request, "Receipt record not found.")
+            return RedirectResponse("/admin/receipts", status_code=303)
+        try:
+            hashes = json.loads(record.transaction_hashes)
+            if not isinstance(hashes, list) or len(hashes) != int(record.expected_transactions):
+                raise ValueError("Invalid stored transaction list")
+        except Exception:
+            set_flash(request, f"Receipt record #{record.id}: stored verification data is invalid; no changes were made.")
+            return RedirectResponse("/admin/receipts", status_code=303)
+
+        try:
+            current_chain_id = int(web3.eth.chain_id)
+            if current_chain_id != int(record.chain_id):
+                set_flash(request, f"Receipt record #{record.id}: connected network does not match chain ID {record.chain_id}.")
+                return RedirectResponse("/admin/receipts", status_code=303)
+            confirmed = failed = checked = unavailable = 0
+            for tx_hash in hashes:
+                try:
+                    chain_receipt = web3.eth.get_transaction_receipt(tx_hash)
+                    checked += 1
+                    if int(chain_receipt.get("status", 0)) == 1:
+                        confirmed += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    unavailable += 1
+        except Exception:
+            set_flash(request, f"Receipt record #{record.id}: blockchain verification is currently unavailable; the record was preserved.")
+            return RedirectResponse("/admin/receipts", status_code=303)
+
+        if checked == len(hashes) and confirmed == len(hashes) and failed == 0 and unavailable == 0:
+            message = f"Receipt record #{record.id}: verified — all {confirmed} transaction(s) confirmed successfully."
+        elif failed:
+            message = f"Receipt record #{record.id}: {failed} transaction(s) report failure; {confirmed} confirmed."
+        else:
+            message = f"Receipt record #{record.id}: verification incomplete — {confirmed} confirmed, {unavailable} unavailable. Try again later."
+        set_flash(request, message)
+        return RedirectResponse("/admin/receipts", status_code=303)
     finally:
         db.close()
 
