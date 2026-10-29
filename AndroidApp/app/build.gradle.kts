@@ -5,6 +5,7 @@ plugins {
 
 android {
     namespace = "zw.ac.gzu.voting"
+
     compileSdk {
         version = release(37)
     }
@@ -35,6 +36,14 @@ android {
 
     buildFeatures {
         compose = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(
+            org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+        )
     }
 }
 

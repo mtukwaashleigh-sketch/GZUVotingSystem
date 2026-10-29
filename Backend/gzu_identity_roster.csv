@@ -1,4 +1,9 @@
-identifier,full_name,identity_type,institutional_email
-M250000,Ashleigh Gamuchirai Mutukwa,student,ashleigh@example.com
-EC12345,Example Employee,employee,employee@example.com
-M250963,Tawona Gandiwa,student,gandiwatawona@gmail.com
+identifier,full_name,identity_type,institutional_email,
+M250000,Ashleigh Gamuchirai Mutukwa,student,jujumupangai@gmail.com,
+EC12345,Example Employee,employee,employee@example.com,
+M250963,Tawona Gandiwa,student,gandiwatawona@gmail.com,
+M251699,Tecla Munhundiripo,student,kaindtecla@gmail.com,
+M251111,Tinotenda Ishe,student,tintohcoolgirl@gmail.com,
+M251101,Makanaka Raki,student,makanaka@example.com,
+M232375,Talent Mawere,student,tmawere@gzu.ac.zw,
+M242670,Tryphine Takunda,student,katiyotryphinet@gmail.com,
