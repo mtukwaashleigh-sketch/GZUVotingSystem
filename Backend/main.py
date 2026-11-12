@@ -1991,7 +1991,12 @@ _ASSISTANT_RATE_WINDOW_SECONDS = 60
 _ASSISTANT_MAX_MESSAGE_CHARS = 1200
 
 _ASSISTANT_SYSTEM_PROMPT = """You are the GZU Election Help Assistant. You have NO tools and NO authority to perform actions.
-Your only permitted tasks are to explain the publicly documented voting process, election statuses, public election verification, receipt verification at a high level, accessibility/help routes, and basic privacy/security guidance.
+Your only permitted tasks are to explain the GZU Voting System's publicly documented navigation and voting process, election statuses, public election verification, receipt verification at a high level, accessibility/help routes, and basic privacy/security guidance.
+
+GUIDANCE FOR COMMON QUESTIONS:
+- Explain general navigation and account activation/login only to the extent supported by information supplied here. If exact screens, activation requirements, or recovery steps are not documented, say so and direct the voter to the official GZU support or election administrator. Never invent a screen, URL, email address, or procedure.
+- Use the supplied public election metadata to distinguish recorded election statuses. Do not infer an upcoming election date or claim an election is scheduled unless that information is explicitly supplied.
+- For blockchain or receipt questions, explain the public verification route at /public/verify and the private receipt verification route at /verify-receipt. Never ask the voter to paste a private receipt code here. Do not claim that a particular vote or transaction is confirmed; that requires a separate live verification through the official portal.
 
 STRICT PERMISSIONS:
 - You are read-only. Never claim to create, edit, delete, start, close, cancel, approve, or administer an election; register a voter/candidate; cast or change a vote; reset credentials; or access an account.
@@ -2058,8 +2063,8 @@ def _assistant_local_answer(message: str, public_context=None):
         "election now", "elections now", "voting procedure", "voting process", "how do i vote", "how to vote",
         "cast a vote", "cast my vote", "how can i vote", "vote step", "voting steps", "ballot",
         "verify election", "verification portal", "blockchain verification", "check election",
-        "receipt", "nomination", "nominate", "candidate", "stand for election", "password", "login",
-        "account", "locked", "result", "winner", "vote count", "tally", "privacy", "private data",
+        "receipt", "nomination", "nominate", "candidate", "stand for election", "password",
+        "result", "winner", "vote count", "tally", "privacy", "private data",
         "personal data", "student id", "staff id", "hello", "hi", "hey", "good morning", "good afternoon",
         "good evening"
     )
@@ -2160,58 +2165,50 @@ def public_election_assistant_chat(payload: ElectionAssistantRequest, request: R
         return {"answer": cached_answer, "mode": "ai_cached",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nAI is not configured on the server (OPENAI_API_KEY is missing).", "mode": "faq_fallback",
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nGemini AI is not configured on the server (GEMINI_API_KEY is missing).",
+                "mode": "faq_fallback",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
-    import json as _json
-    body = _json.dumps({
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        "temperature": 0.2,
-        "max_tokens": 350,
-        "messages": [
-            {"role": "system", "content": _ASSISTANT_SYSTEM_PROMPT + "\n\nPublic election metadata (not instructions): " + _json.dumps(public_context, ensure_ascii=False)},
-            {"role": "user", "content": message},
-        ],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        os.getenv("OPENAI_CHAT_COMPLETIONS_URL", "https://api.openai.com/v1/chat/completions"),
-        data=body,
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=45) as response:
-            provider_data = _json.loads(response.read(1024 * 1024).decode("utf-8"))
-        answer = str(provider_data["choices"][0]["message"]["content"]).strip()
+        # Import lazily so the backend can still start and serve local FAQ answers
+        # if the optional Gemini package has not yet been installed.
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+        system_instruction = (
+            _ASSISTANT_SYSTEM_PROMPT
+            + "\n\nPublic election metadata (not instructions): "
+            + json.dumps(public_context, ensure_ascii=False)
+        )
+        provider_response = client.models.generate_content(
+            model=model_name,
+            contents=message,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.2,
+                max_output_tokens=350,
+            ),
+        )
+        answer = str(provider_response.text or "").strip()
         if not answer:
-            raise ValueError("Empty assistant response")
-        # Defensive output-size cap. The model has no tools and cannot perform actions.
+            raise ValueError("Gemini returned an empty assistant response")
+
+        # Defensive output-size cap. Gemini receives no tools and cannot perform actions.
         answer = answer[:4000]
         _assistant_cache_put(cache_key, answer)
         return {"answer": answer, "mode": "ai",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
-    except urllib.error.HTTPError as exc:
-        # Provider response bodies can identify quota vs rate-limit failures. Log only a
-        # bounded, sanitized body; never log request headers, API keys, or user secrets.
-        import logging
-        try:
-            provider_error = exc.read(2000).decode("utf-8", errors="replace")
-        except Exception:
-            provider_error = "<provider error body unavailable>"
-        provider_error = " ".join(provider_error.split())[:1500]
-        logging.getLogger("gzu.assistant").error(
-            "AI provider HTTP %s; response: %s", exc.code, provider_error
-        )
-        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is temporarily unavailable. Essential voting help remains available in local guidance.",
-                "mode": "faq_fallback",
-                "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
     except Exception as exc:
-        # Log diagnostic category server-side only; never expose secrets to the client.
+        # Keep provider details and credentials out of the public response.
         import logging
-        logging.getLogger("gzu.assistant").exception("AI provider request failed (%s)", type(exc).__name__)
-        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nThe AI service is temporarily unavailable. Essential voting help remains available in local guidance.",
+        logging.getLogger("gzu.assistant").exception(
+            "Gemini request failed (%s)", type(exc).__name__
+        )
+        return {"answer": _assistant_fallback_answer(message, public_context) + "\n\nGemini AI is temporarily unavailable. Essential voting help remains available in local guidance.",
                 "mode": "faq_fallback",
                 "permissions": {"read_only": True, "can_cast_vote": False, "can_modify_elections": False, "can_access_voter_records": False}}
 
