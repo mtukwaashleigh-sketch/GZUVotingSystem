@@ -47,25 +47,3 @@ Technologies
 \- Retrofit for Android API communication
 
 
-
-Development Notes
-
-
-
-The blockchain configuration currently references a local development network with chain ID `31337`. The contract address in `Blockchain/contract-address.json` is specific to that local test setup and may not be valid after the local blockchain is restarted or redeployed.
-
-
-
-The Android application must be configured to communicate with a backend reachable from the device running the app. The backend and blockchain development node should only be used in a controlled development environment.
-
-Security and Privacy
-
-
-
-Do not commit `.env` files, passwords, private keys, real voter information, database files, or other confidential records.
-
-
-
-The root `.gitignore` excludes common local configuration files, generated build files, and database files.
-
-
